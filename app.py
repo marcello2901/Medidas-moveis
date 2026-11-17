@@ -320,14 +320,58 @@ with tab2:
     lim = mm.control_limits(ser, cfg)
     fa = mm.false_alarm_summary(ser, lim, cfg, ctx.n_stream)
 
-    cols_m = st.columns(6)
-    cols_m[0].metric("Resultados elegíveis", f"{int(elig.sum())} / {len(xv)}")
-    cols_m[1].metric("Fora do truncamento", f"{n_trunc} ({100 * n_trunc / max(pop.sum(), 1):.1f}%)")
-    cols_m[2].metric("Alvo", fmt(lim["alvo"]))
-    cols_m[3].metric("DP", fmt(lim["DP"], 4))
-    cols_m[4].metric("Pontos em alarme", f"{fa['% pontos em alarme']:.1f}%")
-    cols_m[5].metric("Episódios de alarme / dia" if has_time else "Episódios / 1000 res.",
-                     fmt(fa["episódios / dia"] if has_time else fa["episódios / 1000 resultados"], 2))
+    def short_names(names: list[str]) -> dict[str, str]:
+        """Remove sufixo comum após ' - ' (ex.: ' - Laboratory 1') para a legenda."""
+        parts = [n.rsplit(" - ", 1) for n in names]
+        if all(len(p_) == 2 for p_ in parts) and len({p_[1] for p_ in parts}) == 1:
+            return {n: p_[0] for n, p_ in zip(names, parts)}
+        return {n: n for n in names}
+
+    def metric_row(n_elig, n_total, n_trunc_, n_pop, lim_, fa_):
+        cm = st.columns(6)
+        cm[0].metric("Resultados elegíveis", f"{n_elig} / {n_total}")
+        cm[1].metric("Fora do truncamento", f"{n_trunc_} ({100 * n_trunc_ / max(n_pop, 1):.1f}%)")
+        if lim_ is None:
+            cm[2].metric("Alvo", "—")
+            cm[3].caption(f"Insuficiente para bloco de {N}.")
+            return
+        cm[2].metric("Alvo", fmt(lim_["alvo"]))
+        cm[3].metric("DP", fmt(lim_["DP"], 4))
+        cm[4].metric("Pontos em alarme", f"{fa_['% pontos em alarme']:.1f}%")
+        cm[5].metric("Episódios de alarme / dia" if has_time else "Episódios / 1000 res.",
+                     fmt(fa_["episódios / dia"] if has_time else fa_["episódios / 1000 resultados"], 2))
+
+    # Resultados por equipamento (fluxo, alvo e DP próprios)
+    inst_res = []
+    if by_inst:
+        names = [g.strip() for g in sel_i]
+        short = short_names(names)
+        for i, g in enumerate(names):
+            dg = data2[data2["group"] == g].reset_index(drop=True)
+            vg = dg["val"].to_numpy()
+            pop_g = mm.population_mask(dg, cfg)
+            ser_g, ctx_g = mm.compute_series(dg, cfg)
+            ok = len(ser_g) >= 5
+            lim_g = mm.control_limits(ser_g, cfg) if ok else None
+            inst_res.append(dict(
+                name=g, short=short[g], color=CAT[i] if i < len(CAT) else None, ser=ser_g, lim=lim_g,
+                fa=mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream) if ok else None,
+                n=len(dg), n_elig=int(ctx_g.elig_pos.size), n_pop=int(pop_g.sum()),
+                n_trunc=int((pop_g & ((vg < t_lo) | (vg > t_hi))).sum()),
+            ))
+
+    def row_label(text, color=None):
+        mark = f'<span style="color:{color};font-size:1.1em">■</span> ' if color else ""
+        st.markdown(f"{mark}**{text}**", unsafe_allow_html=True)
+
+    if by_inst:
+        row_label("Todos (fluxo combinado)")
+    metric_row(int(elig.sum()), len(xv), n_trunc, int(pop.sum()), lim, fa)
+    for r_ in inst_res:
+        row_label(r_["short"], r_["color"])
+        metric_row(r_["n_elig"], r_["n"], r_["n_trunc"], r_["n_pop"], r_["lim"], r_["fa"])
+    if by_inst and (tgt_manual or sd_manual):
+        st.caption("Alvo/DP manuais são aplicados igualmente a todos os equipamentos.")
     if not (tgt_manual or sd_manual):
         st.caption("Alvo e DP calculados dos próprios blocos plotados (dentro da amostra): com k=2 cerca de 5% dos "
                    "pontos ficam fora por construção. Para avaliar limites já em uso no Lab Operations, use valores manuais.")
@@ -371,55 +415,40 @@ with tab2:
             fig.update_yaxes(range=[lo, hi])
         return base_layout(fig, 460, title=title, xaxis_title="data/hora" if (has_time and xaxis == "data/hora") else "nº do resultado")
 
-    def short_names(names: list[str]) -> dict[str, str]:
-        """Remove sufixo comum após ' - ' (ex.: ' - Laboratory 1') para a legenda."""
-        parts = [n.rsplit(" - ", 1) for n in names]
-        if all(len(p_) == 2 for p_ in parts) and len({p_[1] for p_ in parts}) == 1:
-            return {n: p_[0] for n, p_ in zip(names, parts)}
-        return {n: n for n in names}
-
     if by_inst:
         x_is_time = has_time and xaxis == "data/hora"
-        names = [g.strip() for g in sel_i]
-        if len(names) > len(CAT):
+        if len(inst_res) > len(CAT):
             st.warning(f"Mais de {len(CAT)} equipamentos: o gráfico mostra os {len(CAT)} primeiros (a tabela mostra todos).")
-        short = short_names(names)
-        if tgt_manual or sd_manual:
-            st.caption("Alvo/DP manuais são aplicados igualmente a todos os equipamentos.")
         rows = [{"equipamento": "Todos (fluxo combinado)", "resultados": len(xv), "elegíveis": int(elig.sum()),
-                 "alvo": lim["alvo"], "DP": lim["DP"], "LI": lim["LI"], "LS": lim["LS"],
+                 "fora do truncamento": n_trunc, "alvo": lim["alvo"], "DP": lim["DP"], "LI": lim["LI"], "LS": lim["LS"],
                  "Δ alvo vs combinado (DP)": 0.0, "% pontos em alarme": fa["% pontos em alarme"],
                  "episódios": fa["episódios de alarme"], "episódios / dia": fa["episódios / dia"]}]
         fig = go.Figure()
         alarm_legend = False
-        for i, g in enumerate(names):
-            dg = data2[data2["group"] == g].reset_index(drop=True)
-            ser_g, ctx_g = mm.compute_series(dg, cfg)
-            if len(ser_g) < 5:
-                rows.append({"equipamento": short[g], "resultados": len(dg), "elegíveis": int(ctx_g.elig_pos.size)})
+        for r_ in inst_res:
+            g, ser_g, lim_g, fa_g, col = r_["name"], r_["ser"], r_["lim"], r_["fa"], r_["color"]
+            row = {"equipamento": r_["short"], "resultados": r_["n"], "elegíveis": r_["n_elig"],
+                   "fora do truncamento": r_["n_trunc"]}
+            if lim_g is not None:
+                row.update({"alvo": lim_g["alvo"], "DP": lim_g["DP"], "LI": lim_g["LI"], "LS": lim_g["LS"],
+                            "Δ alvo vs combinado (DP)": (lim_g["alvo"] - lim["alvo"]) / lim_g["DP"] if lim_g["DP"] else np.nan,
+                            "% pontos em alarme": fa_g["% pontos em alarme"], "episódios": fa_g["episódios de alarme"],
+                            "episódios / dia": fa_g["episódios / dia"]})
+            rows.append(row)
+            if lim_g is None or col is None:
                 continue
-            lim_g = mm.control_limits(ser_g, cfg)
-            fa_g = mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream)
-            rows.append({"equipamento": short[g], "resultados": len(dg), "elegíveis": int(ctx_g.elig_pos.size),
-                         "alvo": lim_g["alvo"], "DP": lim_g["DP"], "LI": lim_g["LI"], "LS": lim_g["LS"],
-                         "Δ alvo vs combinado (DP)": (lim_g["alvo"] - lim["alvo"]) / lim_g["DP"] if lim_g["DP"] else np.nan,
-                         "% pontos em alarme": fa_g["% pontos em alarme"], "episódios": fa_g["episódios de alarme"],
-                         "episódios / dia": fa_g["episódios / dia"]})
-            if i >= len(CAT):
-                continue
-            col = CAT[i]
             xs = ser_g["t"] if x_is_time else ser_g["seq"]
-            fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=short[g], legendgroup=g,
-                                     line=dict(color=col, width=2), hovertemplate=f"{short[g]}: %{{y:.4f}}<extra></extra>"))
+            fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=r_["short"], legendgroup=g,
+                                     line=dict(color=col, width=2), hovertemplate=f"{r_['short']}: %{{y:.4f}}<extra></extra>"))
             x_rng = [xs.min(), xs.max()]
-            for key, dash, wdt in (("LS", "dash", 1), ("LI", "dash", 1), ("alvo", "dot", 1)):
+            for key, dash in (("LS", "dash"), ("LI", "dash"), ("alvo", "dot")):
                 fig.add_trace(go.Scatter(x=x_rng, y=[lim_g[key]] * 2, mode="lines", legendgroup=g, showlegend=False,
-                                         line=dict(color=col, dash=dash, width=wdt),
-                                         hovertemplate=f"{short[g]} {key}: {lim_g[key]:.4f}<extra></extra>"))
+                                         line=dict(color=col, dash=dash, width=1),
+                                         hovertemplate=f"{r_['short']} {key}: {lim_g[key]:.4f}<extra></extra>"))
             al = mm.alarm_flags(ser_g["valor"].to_numpy(), lim_g, cfg.consec)
             fig.add_trace(go.Scatter(x=xs[al], y=ser_g["valor"][al], mode="markers", legendgroup=g, showlegend=False,
                                      marker=dict(color=col, size=9, line=dict(color="white", width=1.5)),
-                                     hovertemplate=f"alarme {short[g]}: %{{y:.4f}}<extra></extra>"))
+                                     hovertemplate=f"alarme {r_['short']}: %{{y:.4f}}<extra></extra>"))
             alarm_legend = alarm_legend or bool(al.any())
         if alarm_legend:  # entrada de legenda neutra: o alarme herda a cor do equipamento
             fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="alarme (cor do equipamento)",
