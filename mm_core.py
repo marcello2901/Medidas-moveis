@@ -172,6 +172,85 @@ def describe(x: np.ndarray) -> dict:
     }
 
 
+PCTS = [1, 2.5, 5, 10, 25, 50, 75, 90, 95, 97.5, 99]
+
+
+def describe_full(x: np.ndarray) -> pd.DataFrame:
+    """Estatística descritiva completa de uma amostra (tabela medida × valor)."""
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    n = len(x)
+    rows: list[tuple[str, str, float]] = []
+    add = lambda grp, k, v: rows.append((grp, k, float(v) if v is not None else np.nan))
+    if n == 0:
+        return pd.DataFrame(columns=["grupo", "medida", "valor"])
+    mean, sd = x.mean(), x.std(ddof=1) if n > 1 else np.nan
+    se = sd / np.sqrt(n) if n > 1 else np.nan
+    tcrit = stats.t.ppf(0.975, n - 1) if n > 1 else np.nan
+    add("Tamanho", "n", n)
+    add("Tamanho", "valores distintos", len(np.unique(x)))
+    add("Tendência central", "média", mean)
+    add("Tendência central", "IC95% média — inferior", mean - tcrit * se)
+    add("Tendência central", "IC95% média — superior", mean + tcrit * se)
+    add("Tendência central", "mediana", np.median(x))
+    if n >= 10:  # IC95% da mediana por ordem binomial (não paramétrico)
+        lo_k = int(max(stats.binom.ppf(0.025, n, 0.5) - 1, 0))
+        hi_k = int(min(stats.binom.ppf(0.975, n, 0.5), n - 1))
+        xs = np.sort(x)
+        add("Tendência central", "IC95% mediana — inferior", xs[lo_k])
+        add("Tendência central", "IC95% mediana — superior", xs[hi_k])
+    vals, counts = np.unique(x, return_counts=True)
+    add("Tendência central", "moda (valor mais frequente)", vals[np.argmax(counts)])
+    add("Tendência central", "média geométrica", stats.gmean(x) if x.min() > 0 else np.nan)
+    add("Tendência central", "média aparada 5%", stats.trim_mean(x, 0.05))
+    add("Dispersão", "DP", sd)
+    add("Dispersão", "variância", sd ** 2 if n > 1 else np.nan)
+    add("Dispersão", "CV%", 100 * sd / mean if mean else np.nan)
+    add("Dispersão", "erro-padrão da média", se)
+    add("Dispersão", "mínimo", x.min())
+    add("Dispersão", "máximo", x.max())
+    add("Dispersão", "n no valor mínimo", int((x == x.min()).sum()))  # acúmulo = possível limite de quantificação
+    add("Dispersão", "n no valor máximo", int((x == x.max()).sum()))
+    add("Dispersão", "amplitude", x.max() - x.min())
+    q1, q3 = np.percentile(x, [25, 75])
+    add("Dispersão", "IQR (Q3 − Q1)", q3 - q1)
+    mad = stats.median_abs_deviation(x, scale="normal")
+    add("Dispersão", "MAD normalizado (≈DP robusto)", mad)
+    add("Dispersão", "CV robusto% (MAD/mediana)", 100 * mad / np.median(x) if np.median(x) else np.nan)
+    for p_ in PCTS:
+        add("Percentis", f"P{p_:g}".replace(".", ","), np.percentile(x, p_))
+    add("Forma", "assimetria", stats.skew(x, bias=False) if n > 2 else np.nan)
+    add("Forma", "curtose (excesso)", stats.kurtosis(x, bias=False) if n > 3 else np.nan)
+    if n >= 8:
+        add("Normalidade", "D'Agostino-Pearson K² — p", stats.normaltest(x).pvalue)
+    if 3 <= n <= 5000:
+        add("Normalidade", "Shapiro-Wilk — p", stats.shapiro(x).pvalue)
+    if n >= 8:
+        try:  # SciPy >= 1.17: p-valor interpolado
+            ad = stats.anderson(x, dist="norm", method="interpolate")
+            add("Normalidade", "Anderson-Darling A²", ad.statistic)
+            add("Normalidade", "Anderson-Darling — p", ad.pvalue)
+        except TypeError:
+            ad = stats.anderson(x, dist="norm")
+            add("Normalidade", "Anderson-Darling A²", ad.statistic)
+            add("Normalidade", "Anderson-Darling — valor crítico 5%",
+                ad.critical_values[list(ad.significance_level).index(5.0)])
+    return pd.DataFrame(rows, columns=["grupo", "medida", "valor"])
+
+
+def group_describe(d: pd.DataFrame, by: str) -> pd.DataFrame:
+    """Resumo por grupo (sexo, equipamento, faixa etária...)."""
+    g = d.dropna(subset=[by]).groupby(by, observed=True)["val"]
+    out = pd.DataFrame({
+        "n": g.size(), "média": g.mean(), "DP": g.std(ddof=1), "mediana": g.median(),
+        "P2,5": g.quantile(0.025), "P25": g.quantile(0.25), "P75": g.quantile(0.75), "P97,5": g.quantile(0.975),
+        "mín": g.min(), "máx": g.max(),
+    })
+    out["CV%"] = 100 * out["DP"] / out["média"]
+    out.insert(1, "% do total", 100 * out["n"] / out["n"].sum())
+    return out.reset_index()
+
+
 def transform(x: np.ndarray, method: str):
     """Retorna (y, inversa, info). method: 'none' | 'log' | 'boxcox'."""
     x = np.asarray(x, float)

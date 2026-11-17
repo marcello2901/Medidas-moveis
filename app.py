@@ -1,6 +1,6 @@
 """
 Configurador de Medidas Móveis (PBRTQC)
-Etapa 1: preparo dos dados · Etapa 2: configuração · Etapa 3: simulação de bias
+Etapa 1: estatística descritiva · Etapa 2: preparo dos dados · Etapa 3: configuração · Etapa 4: simulação de bias
 
 Executar:  streamlit run app.py
 """
@@ -12,6 +12,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from scipy import stats
 import streamlit as st
 from plotly.subplots import make_subplots
 
@@ -150,10 +151,135 @@ with st.sidebar.expander("Resumo da leitura", expanded=False):
 if not has_time:
     st.warning("Sem coluna de data: a ordem das linhas da planilha será tomada como ordem cronológica.")
 
-tab1, tab2, tab3 = st.tabs(["1 · Preparo dos dados", "2 · Configuração da ferramenta", "3 · Simulação de bias"])
+tab0, tab1, tab2, tab3 = st.tabs(["1 · Estatística descritiva", "2 · Preparo dos dados",
+                                  "3 · Configuração da ferramenta", "4 · Simulação de bias"])
 
 # =============================================================================
-# Etapa 1 — preparo dos dados
+# Etapa 1 — estatística descritiva
+# =============================================================================
+INT_MEASURES = {"n", "valores distintos", "n no valor mínimo", "n no valor máximo"}
+
+
+def fmt_stat(medida: str, v: float) -> str:
+    if v is None or not np.isfinite(v):
+        return "—"
+    if medida in INT_MEASURES:
+        return fmt(v, 0)
+    if medida.endswith("— p"):
+        return "< 0,001" if v < 0.001 else fmt(v, 3)
+    return fmt(v, 4) if abs(v) < 1000 else fmt(v, 2)
+
+
+with tab0:
+    xd = data["val"].to_numpy()
+    st.caption("Todos os resultados numéricos do teste/equipamento(s) selecionados na barra lateral, antes de "
+               "qualquer exclusão de outliers, truncamento ou filtro de sexo/idade.")
+    top = st.columns(5)
+    top[0].metric("Resultados válidos", fmt(len(xd), 0))
+    top[1].metric("Linhas descartadas", fmt(rep["linhas_lidas"] - rep["linhas_validas"], 0),
+                  help="Sem resultado numérico" + (" ou sem data/hora" if has_time else ""))
+    if has_time:
+        days = (data["t"].max() - data["t"].min()) / pd.Timedelta(days=1)
+        top[2].metric("Período", f"{data['t'].min():%d/%m/%y} a {data['t'].max():%d/%m/%y}")
+        top[3].metric("Dias com resultado", fmt(data["t"].dt.normalize().nunique(), 0))
+        top[4].metric("Resultados / dia (média)", fmt(len(xd) / max(data["t"].dt.normalize().nunique(), 1), 1))
+
+    dfull = mm.describe_full(xd)
+    left, right = st.columns([1, 1.4])
+    with left:
+        st.subheader("Medidas")
+        show = dfull.assign(valor=[fmt_stat(m_, v_) for m_, v_ in zip(dfull["medida"], dfull["valor"])])
+        st.dataframe(show, hide_index=True, width="stretch", height=640)
+        sk = dfull.set_index("medida")["valor"]
+        msgs = []
+        if "assimetria" in sk and abs(sk["assimetria"]) > 1:
+            msgs.append(f"assimetria {fmt(sk['assimetria'], 2)}: distribuição bem assimétrica, a média fica "
+                        f"{'acima' if sk['assimetria'] > 0 else 'abaixo'} da mediana e é sensível à cauda; "
+                        "a mediana móvel ou um truncamento mais apertado tendem a ser mais estáveis")
+        if sk.get("n no valor mínimo", 0) > 0.01 * len(xd):
+            msgs.append(f"{fmt(sk['n no valor mínimo'], 0)} resultados ({100 * sk['n no valor mínimo'] / len(xd):.1f}%) "
+                        "empilhados no valor mínimo: provável limite de quantificação/medição (resultados censurados)")
+        for m_ in msgs:
+            st.info(m_)
+    with right:
+        st.subheader("Distribuição")
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.03)
+        fig.add_trace(go.Histogram(x=xd, nbinsx=80, marker_color=C1, name="resultados",
+                                   hovertemplate="%{x}: %{y} resultados<extra></extra>"), 1, 1)
+        fig.add_trace(go.Box(x=xd, marker_color=C1, name="", boxpoints="outliers", marker_size=3,
+                             hoverinfo="x"), 2, 1)
+        fig.update_yaxes(title="nº de resultados", row=1, col=1)
+        fig.update_yaxes(showticklabels=False, row=2, col=1)
+        st.plotly_chart(base_layout(fig, 360, showlegend=False, bargap=0.05, hovermode="closest"), width="stretch")
+        # Q-Q normal
+        osm, osr = stats.probplot(xd, dist="norm", fit=False)
+        sl, ic, _ = stats.probplot(xd, dist="norm")[1]
+        idx = np.unique(np.linspace(0, len(osm) - 1, min(len(osm), 3000)).astype(int))  # amostra para desenhar
+        fig = go.Figure()
+        fig.add_trace(go.Scattergl(x=osm[idx], y=osr[idx], mode="markers", marker=dict(size=4, color=C1),
+                                   name="resultados", hovertemplate="quantil teórico %{x:.2f}: %{y}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=[osm.min(), osm.max()], y=[ic + sl * osm.min(), ic + sl * osm.max()],
+                                 mode="lines", line=dict(color=INK, width=1, dash="dash"), name="normal de referência",
+                                 hoverinfo="skip"))
+        fig.update_xaxes(title="quantil teórico da normal")
+        fig.update_yaxes(title="resultado")
+        st.plotly_chart(base_layout(fig, 320, title="Q-Q normal (pontos fora da reta = desvio da normalidade)",
+                                    showlegend=False, hovermode="closest"), width="stretch")
+
+    st.subheader("Por grupo")
+    groups = []
+    if has_sex:
+        groups.append(("Sexo", "sex", data))
+    if cmap.group and data["group"].nunique() > 0:
+        groups.append(("Equipamento", "group", data))
+    if has_age:
+        dage = data.assign(faixa=pd.cut(data["age"], [0, 1, 12, 18, 30, 40, 50, 60, 70, 80, 200], right=False,
+                                        labels=["<1", "1–11", "12–17", "18–29", "30–39", "40–49", "50–59",
+                                                "60–69", "70–79", "80+"]))
+        groups.append(("Faixa etária (anos)", "faixa", dage))
+    if has_time:
+        dias = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+        dwd = data.assign(dia=pd.Categorical(data["t"].dt.dayofweek.map(dict(enumerate(dias))), dias, ordered=True))
+        groups.append(("Dia da semana", "dia", dwd))
+        dh = data.assign(turno=pd.cut(data["t"].dt.hour, [0, 6, 12, 18, 24], right=False,
+                                      labels=["00–05h", "06–11h", "12–17h", "18–23h"]))
+        groups.append(("Turno", "turno", dh))
+    grp_tables = {}
+    if groups:
+        sub = st.tabs([g_[0] for g_ in groups])
+        for t_, (lab, colname, dsrc) in zip(sub, groups):
+            gt = mm.group_describe(dsrc, colname).rename(columns={colname: lab})
+            grp_tables[lab] = gt
+            t_.dataframe(gt.round(3), hide_index=True, width="stretch")
+        st.caption("Grupos com média diferente da geral e muitos resultados são os que mais mexem na medida móvel "
+                   "quando sua proporção muda ao longo do dia ou da semana.")
+    else:
+        st.info("Informe sexo, idade, equipamento ou data/hora para ver os resumos por grupo.")
+
+    if has_time:
+        st.subheader("Ao longo do tempo")
+        daily = data.groupby(data["t"].dt.normalize())["val"].agg(n="size", media="mean", mediana="median").reset_index()
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4], vertical_spacing=0.08,
+                            subplot_titles=("Média e mediana diárias", "Nº de resultados por dia"))
+        fig.add_trace(go.Scatter(x=daily["t"], y=daily["media"], mode="lines+markers", name="média",
+                                 line=dict(color=C1, width=2), marker=dict(size=5),
+                                 customdata=daily["n"], hovertemplate="%{x|%d/%m/%Y}: média %{y:.3f} (n=%{customdata})<extra></extra>"), 1, 1)
+        fig.add_trace(go.Scatter(x=daily["t"], y=daily["mediana"], mode="lines", name="mediana",
+                                 line=dict(color=C2, width=2), hovertemplate="%{x|%d/%m/%Y}: mediana %{y:.3f}<extra></extra>"), 1, 1)
+        fig.add_trace(go.Bar(x=daily["t"], y=daily["n"], marker_color=MUTED, name="n", showlegend=False,
+                             hovertemplate="%{x|%d/%m/%Y}: %{y} resultados<extra></extra>"), 2, 1)
+        st.plotly_chart(base_layout(fig, 460, hovermode="closest"), width="stretch")
+
+    buf_d = io.BytesIO()
+    with pd.ExcelWriter(buf_d, engine="openpyxl") as xw:
+        dfull.to_excel(xw, sheet_name="Descritiva", index=False)
+        for lab, gt in grp_tables.items():
+            gt.to_excel(xw, sheet_name=lab[:31].replace("/", "-"), index=False)
+    st.download_button("Baixar estatística descritiva (.xlsx)", buf_d.getvalue(), file_name="estatistica_descritiva.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# =============================================================================
+# Etapa 2 — preparo dos dados
 # =============================================================================
 with tab1:
     x = data["val"].to_numpy()
@@ -168,7 +294,7 @@ with tab1:
     tr = {"Box-Cox": "boxcox", "Logarítmica": "log", "Nenhuma (dados brutos)": "none"}[tr_label]
     k_tukey = b.number_input("k do Tukey (IQR)", 0.5, 5.0, 1.5, 0.5, help="1,5 = outlier; 3,0 = outlier extremo")
     iterative = c.checkbox("Tukey iterativo", help="Repete até não restarem outliers")
-    use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 2 e 3", value=False,
+    use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 3 e 4", value=False,
                         help="O Lab Operations não aplica essa exclusão em tempo real. Se ligar, as simulações usam "
                              "uma população mais limpa do que a que o middleware vai receber.")
     oa = mm.outlier_analysis(x, tr, k_tukey, iterative)
@@ -176,10 +302,10 @@ with tab1:
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
         f"{oa['n_out']} resultados fora ({100 * oa['n_out'] / len(x):.2f}%). "
         + (f"λ Box-Cox = {oa['lambda']:.3f}. " if "lambda" in oa else "")
-        + "Na etapa 2 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência da planilha."
+        + "Na etapa 3 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência da planilha."
     )
     if use_out:
-        st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 2 e 3.")
+        st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 3 e 4.")
 
     h1, h2 = st.columns(2)
     fig = go.Figure(go.Histogram(x=x, nbinsx=60, marker_color=C1, name="resultados"))
@@ -220,7 +346,7 @@ with tab1:
         fig.update_xaxes(title_text="idade (anos)", row=2, col=1)
         st.plotly_chart(base_layout(fig, 520), width="stretch")
         st.caption("Faixas com muitos resultados e média distante da linha pontilhada (média geral) são as que mais "
-                   "deslocam a medida móvel quando a composição da população muda. Candidatas a filtro na etapa 2.")
+                   "deslocam a medida móvel quando a composição da população muda. Candidatas a filtro na etapa 3.")
     else:
         st.info("Informe a coluna de idade para ver o gráfico por idade.")
 
@@ -235,7 +361,7 @@ with tab1:
             st.plotly_chart(base_layout(fig, 420, showlegend=False), width="stretch")
 
 # =============================================================================
-# Etapa 2 — configuração
+# Etapa 3 — configuração
 # =============================================================================
 with tab2:
     xv = data2["val"].to_numpy()
@@ -246,7 +372,7 @@ with tab2:
         vc = data2["ref"].dropna().value_counts()
         ref_opts = [(txt, int(n), mm.parse_ref_range(txt)) for txt, n in vc.items()]
         ref_opts = [o for o in ref_opts if o[2] is not None]
-    src_opts = (["Intervalo de referência da planilha"] if ref_opts else []) + ["Cercas de Tukey (etapa 1)"]
+    src_opts = (["Intervalo de referência da planilha"] if ref_opts else []) + ["Cercas de Tukey (etapa 2)"]
     a, b = st.columns([1, 2])
     src = a.radio("Sugestão de truncamento", src_opts,
                   help="Define o valor inicial dos limites abaixo. Os limites continuam editáveis.")
@@ -413,6 +539,16 @@ with tab2:
     tea = c.number_input("Erro sistemático máximo permitido (%) para desenhar no gráfico (0 = não desenhar)",
                          0.0, 100.0, 0.0, 0.5)
 
+    def hover_cd(ser_):
+        """customdata para o hover: [data/hora do último resultado do bloco, nº do resultado no fluxo]."""
+        if has_time:
+            ts = pd.to_datetime(ser_["t"]).dt.strftime("%d/%m/%Y %H:%M:%S").fillna("sem data")
+        else:
+            ts = pd.Series("sem data", index=ser_.index)
+        return np.c_[ts.to_numpy(dtype=object), ser_["seq"].to_numpy()]
+
+    HOVER_PT = "<br>%{customdata[0]} · resultado nº %{customdata[1]}"
+
     def series_figure(ser_, lim_, title, bias_start=None, raw_vals=None):
         xs = ser_["t"] if (has_time and xaxis == "data/hora") else ser_["seq"]
         al = mm.alarm_flags(ser_["valor"].to_numpy(), lim_, cfg.consec)
@@ -421,11 +557,12 @@ with tab2:
             rx = data2["t"] if (has_time and xaxis == "data/hora") else np.arange(1, len(data2) + 1)
             fig.add_trace(go.Scattergl(x=rx, y=raw_vals, mode="markers", name="resultados",
                                        marker=dict(size=3, color=MUTED, opacity=0.35), hoverinfo="skip"))
+        cd = hover_cd(ser_)
         fig.add_trace(go.Scatter(x=xs, y=ser_["valor"], mode="lines", name=stat_lab, line=dict(color=C1, width=2),
-                                 hovertemplate="%{y:.4f}"))
+                                 customdata=cd, hovertemplate="%{y:.4f}" + HOVER_PT + "<extra></extra>"))
         fig.add_trace(go.Scatter(x=xs[al], y=ser_["valor"][al], mode="markers", name="alarme",
                                  marker=dict(color=ALARM, size=8, line=dict(color="white", width=1.5)),
-                                 hovertemplate="alarme: %{y:.4f}"))
+                                 customdata=cd[al], hovertemplate="alarme: %{y:.4f}" + HOVER_PT + "<extra></extra>"))
         fig.add_hline(y=lim_["alvo"], line_color=INK, line_width=1, annotation_text="alvo", annotation_position="right")
         for kname in ("LI", "LS"):
             fig.add_hline(y=lim_[kname], line_color=ALARM, line_dash="dash", line_width=1,
@@ -469,8 +606,10 @@ with tab2:
             if lim_g is None or col is None:
                 continue
             xs = ser_g["t"] if x_is_time else ser_g["seq"]
+            cd = hover_cd(ser_g)
             fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=r_["short"], legendgroup=g,
-                                     line=dict(color=col, width=2), hovertemplate=f"{r_['short']}: %{{y:.4f}}<extra></extra>"))
+                                     line=dict(color=col, width=2), customdata=cd,
+                                     hovertemplate=f"{r_['short']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"))
             x_rng = [xs.min(), xs.max()]
             for key, dash in (("LS", "dash"), ("LI", "dash"), ("alvo", "dot")):
                 fig.add_trace(go.Scatter(x=x_rng, y=[lim_g[key]] * 2, mode="lines", legendgroup=g, showlegend=False,
@@ -479,7 +618,8 @@ with tab2:
             al = mm.alarm_flags(ser_g["valor"].to_numpy(), lim_g, cfg.consec)
             fig.add_trace(go.Scatter(x=xs[al], y=ser_g["valor"][al], mode="markers", legendgroup=g, showlegend=False,
                                      marker=dict(color=col, size=9, line=dict(color="white", width=1.5)),
-                                     hovertemplate=f"alarme {r_['short']}: %{{y:.4f}}<extra></extra>"))
+                                     customdata=cd[al],
+                                     hovertemplate=f"alarme {r_['short']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"))
             alarm_legend = alarm_legend or bool(al.any())
         if alarm_legend:  # entrada de legenda neutra: o alarme herda a cor do equipamento
             fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="alarme (cor do equipamento)",
@@ -509,17 +649,17 @@ with tab2:
                          "episódios / dia": fa_s["episódios / dia"]})
         st.dataframe(pd.DataFrame(rows).round(4), hide_index=True, width="stretch")
         st.caption("Com limites calculados da própria série, o % de pontos em alarme fica parecido entre as estatísticas. "
-                   "O que muda é quantos episódios isso gera e, principalmente, a detecção de erro (etapa 3).")
+                   "O que muda é quantos episódios isso gera e, principalmente, a detecção de erro (etapa 4).")
 
 # =============================================================================
-# Etapa 3 — simulação de bias
+# Etapa 4 — simulação de bias
 # =============================================================================
 with tab3:
     st.markdown(
         "Um erro sistemático é injetado em pontos aleatórios do fluxo real de resultados e mantido daí em diante. "
         "O erro entra **antes** do truncamento: um bias grande empurra resultados para fora dos limites e muda o que a "
         "ferramenta enxerga. Para cada bias, mede-se **quantos resultados de pacientes são liberados entre o início do "
-        "erro e o alarme** (NPed). Só conta o alarme no sentido do erro. Os limites são os da etapa 2."
+        "erro e o alarme** (NPed). Só conta o alarme no sentido do erro. Os limites são os da etapa 3."
     )
     a, b, c, d_ = st.columns(4)
     kind = a.radio("Tipo de bias", ["%", "unidade do resultado"], horizontal=True)
