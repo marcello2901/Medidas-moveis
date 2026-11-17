@@ -106,6 +106,7 @@ class ColumnMap:
     time: str | None = None
     age: str | None = None
     sex: str | None = None
+    group: str | None = None  # ex.: equipamento
 
 
 def prepare_dataset(df: pd.DataFrame, cmap: ColumnMap) -> tuple[pd.DataFrame, dict]:
@@ -116,6 +117,7 @@ def prepare_dataset(df: pd.DataFrame, cmap: ColumnMap) -> tuple[pd.DataFrame, di
     out["t"] = build_datetime(df, cmap.date, cmap.time)
     out["age"] = parse_age(df[cmap.age]) if cmap.age else np.nan
     out["sex"] = df[cmap.sex].astype("string").str.strip() if cmap.sex else pd.NA
+    out["group"] = df[cmap.group].astype("string").str.strip() if cmap.group else pd.NA
 
     rep = {"linhas_lidas": len(out), "sem_resultado_numerico": int(out["val"].isna().sum())}
     out = out[out["val"].notna()]

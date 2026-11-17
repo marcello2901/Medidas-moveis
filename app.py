@@ -21,6 +21,7 @@ st.set_page_config(page_title="Configurador de Medidas Móveis", layout="wide")
 
 # Paleta (categórica em ordem fixa + cores de papel)
 C1, C2, C3, C4 = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
+CAT = [C1, C2, C3, C4, "#e87ba4", "#008300", "#6250d6", "#8a6d3b"]  # ordem fixa, nunca reciclada
 SEX_COLORS = [C1, C2, C3, C4]
 INK, MUTED, ALARM = "#3d3d3a", "#8a8984", "#e34948"
 NONE = "— nenhuma —"
@@ -100,6 +101,7 @@ c_test = st.sidebar.selectbox("Coluna do teste/analito", [NONE] + cols, index=gu
 c_inst = st.sidebar.selectbox("Coluna do equipamento", [NONE] + cols, index=guess([NONE] + cols, ["instrument", "equipamento", "analisador", "instrumento"]))
 
 df = raw.copy()
+sel_i: list[str] = []
 if c_test != NONE:
     tests = sorted(df[c_test].dropna().astype(str).unique())
     sel_t = st.sidebar.selectbox("Teste", tests) if tests else None
@@ -111,7 +113,8 @@ if c_inst != NONE:
     df = df[df[c_inst].astype(str).isin(sel_i)]
     if len(sel_i) > 1:
         st.sidebar.warning("Vários equipamentos viram um único fluxo em ordem cronológica. Na rotina a medida móvel "
-                           "é avaliada por equipamento: um erro em só um deles fica diluído aqui.")
+                           "é avaliada por equipamento: um erro em só um deles fica diluído aqui. Para ver cada um, "
+                           "marque \"Ver por equipamento\" em Limites de controle.")
 
 if df.empty:
     st.error("Nenhuma linha após os filtros.")
@@ -123,6 +126,7 @@ cmap = mm.ColumnMap(
     time=None if c_time == NONE or c_date == ROW_ORDER else c_time,
     age=None if c_age == NONE else c_age,
     sex=None if c_sex == NONE else c_sex,
+    group=None if c_inst == NONE else c_inst,
 )
 data, rep = mm.prepare_dataset(df, cmap)
 has_time = cmap.date is not None
@@ -304,6 +308,12 @@ with tab2:
         sdv = blocks_sd
         c.caption(f"DP = {fmt(blocks_sd, 4)}")
     consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
+    multi_inst = len(sel_i) > 1
+    by_inst = st.checkbox(
+        "Ver por equipamento", value=False, disabled=not multi_inst,
+        help="Calcula a medida móvel separadamente em cada equipamento selecionado (fluxo próprio, alvo e DP "
+             "próprios) e plota todos no mesmo gráfico." if multi_inst else
+             "Selecione 2 ou mais equipamentos na barra lateral para habilitar.")
 
     cfg = replace(cfg, k=k_lim, consec=consec,
                   target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None)
@@ -361,8 +371,71 @@ with tab2:
             fig.update_yaxes(range=[lo, hi])
         return base_layout(fig, 460, title=title, xaxis_title="data/hora" if (has_time and xaxis == "data/hora") else "nº do resultado")
 
-    st.plotly_chart(series_figure(ser, lim, f"{stat_lab}: {N}-{step}", raw_vals=xv if show_raw else None),
-                    width="stretch")
+    def short_names(names: list[str]) -> dict[str, str]:
+        """Remove sufixo comum após ' - ' (ex.: ' - Laboratory 1') para a legenda."""
+        parts = [n.rsplit(" - ", 1) for n in names]
+        if all(len(p_) == 2 for p_ in parts) and len({p_[1] for p_ in parts}) == 1:
+            return {n: p_[0] for n, p_ in zip(names, parts)}
+        return {n: n for n in names}
+
+    if by_inst:
+        x_is_time = has_time and xaxis == "data/hora"
+        names = [g.strip() for g in sel_i]
+        if len(names) > len(CAT):
+            st.warning(f"Mais de {len(CAT)} equipamentos: o gráfico mostra os {len(CAT)} primeiros (a tabela mostra todos).")
+        short = short_names(names)
+        if tgt_manual or sd_manual:
+            st.caption("Alvo/DP manuais são aplicados igualmente a todos os equipamentos.")
+        rows = [{"equipamento": "Todos (fluxo combinado)", "resultados": len(xv), "elegíveis": int(elig.sum()),
+                 "alvo": lim["alvo"], "DP": lim["DP"], "LI": lim["LI"], "LS": lim["LS"],
+                 "Δ alvo vs combinado (DP)": 0.0, "% pontos em alarme": fa["% pontos em alarme"],
+                 "episódios": fa["episódios de alarme"], "episódios / dia": fa["episódios / dia"]}]
+        fig = go.Figure()
+        alarm_legend = False
+        for i, g in enumerate(names):
+            dg = data2[data2["group"] == g].reset_index(drop=True)
+            ser_g, ctx_g = mm.compute_series(dg, cfg)
+            if len(ser_g) < 5:
+                rows.append({"equipamento": short[g], "resultados": len(dg), "elegíveis": int(ctx_g.elig_pos.size)})
+                continue
+            lim_g = mm.control_limits(ser_g, cfg)
+            fa_g = mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream)
+            rows.append({"equipamento": short[g], "resultados": len(dg), "elegíveis": int(ctx_g.elig_pos.size),
+                         "alvo": lim_g["alvo"], "DP": lim_g["DP"], "LI": lim_g["LI"], "LS": lim_g["LS"],
+                         "Δ alvo vs combinado (DP)": (lim_g["alvo"] - lim["alvo"]) / lim_g["DP"] if lim_g["DP"] else np.nan,
+                         "% pontos em alarme": fa_g["% pontos em alarme"], "episódios": fa_g["episódios de alarme"],
+                         "episódios / dia": fa_g["episódios / dia"]})
+            if i >= len(CAT):
+                continue
+            col = CAT[i]
+            xs = ser_g["t"] if x_is_time else ser_g["seq"]
+            fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=short[g], legendgroup=g,
+                                     line=dict(color=col, width=2), hovertemplate=f"{short[g]}: %{{y:.4f}}<extra></extra>"))
+            x_rng = [xs.min(), xs.max()]
+            for key, dash, wdt in (("LS", "dash", 1), ("LI", "dash", 1), ("alvo", "dot", 1)):
+                fig.add_trace(go.Scatter(x=x_rng, y=[lim_g[key]] * 2, mode="lines", legendgroup=g, showlegend=False,
+                                         line=dict(color=col, dash=dash, width=wdt),
+                                         hovertemplate=f"{short[g]} {key}: {lim_g[key]:.4f}<extra></extra>"))
+            al = mm.alarm_flags(ser_g["valor"].to_numpy(), lim_g, cfg.consec)
+            fig.add_trace(go.Scatter(x=xs[al], y=ser_g["valor"][al], mode="markers", legendgroup=g, showlegend=False,
+                                     marker=dict(color=col, size=9, line=dict(color="white", width=1.5)),
+                                     hovertemplate=f"alarme {short[g]}: %{{y:.4f}}<extra></extra>"))
+            alarm_legend = alarm_legend or bool(al.any())
+        if alarm_legend:  # entrada de legenda neutra: o alarme herda a cor do equipamento
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="alarme (cor do equipamento)",
+                                     marker=dict(color=MUTED, size=9, line=dict(color="white", width=1.5))))
+        fig.update_xaxes(title="data/hora" if x_is_time else "nº do resultado no equipamento")
+        st.plotly_chart(base_layout(fig, 500, title=f"{stat_lab}: {N}-{step} por equipamento "
+                                    "(tracejado = LI/LS, pontilhado = alvo, na cor do equipamento)",
+                                    hovermode="closest"), width="stretch")
+        st.dataframe(pd.DataFrame(rows).round(4), hide_index=True, width="stretch")
+        st.caption("Cada equipamento tem fluxo, alvo e DP próprios (a não ser que alvo/DP sejam manuais). "
+                   "Δ alvo vs combinado = quanto o alvo do equipamento se afasta do alvo do fluxo combinado, em DPs do "
+                   "próprio equipamento. Valores acima de ~0,3 DP indicam que um alvo único deslocaria os falsos "
+                   "alarmes para um lado. Clique na legenda para esconder/mostrar um equipamento.")
+    else:
+        st.plotly_chart(series_figure(ser, lim, f"{stat_lab}: {N}-{step}", raw_vals=xv if show_raw else None),
+                        width="stretch")
 
     with st.expander("Comparar as quatro estatísticas com a mesma configuração (falsos alarmes)"):
         rows = []
