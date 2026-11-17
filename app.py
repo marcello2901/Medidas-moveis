@@ -95,6 +95,11 @@ c_time = st.sidebar.selectbox("Hora (se estiver em coluna separada)", time_opts,
                               index=guess(time_opts, ["hora,res", "hora res", "hora resultado", "hora", "time"]))
 c_age = st.sidebar.selectbox("Idade", [NONE] + cols, index=guess([NONE] + cols, ["idade", "age"]))
 c_sex = st.sidebar.selectbox("Sexo", [NONE] + cols, index=guess([NONE] + cols, ["sexo", "gender", "sex", "genero"]))
+c_ref = st.sidebar.selectbox(
+    "Intervalo de referência", [NONE] + cols,
+    index=guess([NONE] + cols, ["ref. ranges", "ref, ranges", "ref ranges", "reference range", "valor de referência",
+                                "valores de referência", "intervalo de referência", "vr", "ref."]),
+    help="Texto como '2.52 - 39.20', '3,50 - 5,10', '< 5,0' ou '> 10'. Usado como sugestão de truncamento.")
 
 st.sidebar.subheader("Filtros")
 c_test = st.sidebar.selectbox("Coluna do teste/analito", [NONE] + cols, index=guess([NONE] + cols, ["teste", "exame", "analito", "test"]))
@@ -127,6 +132,7 @@ cmap = mm.ColumnMap(
     age=None if c_age == NONE else c_age,
     sex=None if c_sex == NONE else c_sex,
     group=None if c_inst == NONE else c_inst,
+    ref=None if c_ref == NONE else c_ref,
 )
 data, rep = mm.prepare_dataset(df, cmap)
 has_time = cmap.date is not None
@@ -170,7 +176,7 @@ with tab1:
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
         f"{oa['n_out']} resultados fora ({100 * oa['n_out'] / len(x):.2f}%). "
         + (f"λ Box-Cox = {oa['lambda']:.3f}. " if "lambda" in oa else "")
-        + "Essas cercas são a sugestão inicial de truncamento na etapa 2."
+        + "Na etapa 2 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência da planilha."
     )
     if use_out:
         st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 2 e 3.")
@@ -234,9 +240,34 @@ with tab1:
 with tab2:
     xv = data2["val"].to_numpy()
     st.subheader("Truncamento e população")
+    # Intervalos de referência presentes na planilha (mais frequente primeiro)
+    ref_opts = []
+    if cmap.ref:
+        vc = data2["ref"].dropna().value_counts()
+        ref_opts = [(txt, int(n), mm.parse_ref_range(txt)) for txt, n in vc.items()]
+        ref_opts = [o for o in ref_opts if o[2] is not None]
+    src_opts = (["Intervalo de referência da planilha"] if ref_opts else []) + ["Cercas de Tukey (etapa 1)"]
+    a, b = st.columns([1, 2])
+    src = a.radio("Sugestão de truncamento", src_opts,
+                  help="Define o valor inicial dos limites abaixo. Os limites continuam editáveis.")
+    if cmap.ref and not ref_opts:
+        b.info("A coluna de intervalo de referência não tem textos reconhecíveis (ex.: '2.52 - 39.20'). Usando Tukey.")
+    if src.startswith("Intervalo"):
+        tot = sum(o[1] for o in ref_opts)
+        ref_sel = b.selectbox(
+            "Intervalo a usar", ref_opts,
+            format_func=lambda o: f"{o[0]}  ({o[1]} resultados, {100 * o[1] / tot:.1f}%)")
+        if len(ref_opts) > 1:
+            b.caption(f"A coluna tem {len(ref_opts)} intervalos diferentes (em geral por idade/sexo). O truncamento "
+                      "usa um único par de limites: escolha o intervalo da população que o perfil vai cobrir e "
+                      "ajuste o filtro de sexo/idade abaixo de acordo.")
+        r_lo, r_hi = ref_sel[2]
+        sug_lo = r_lo if r_lo is not None else float(xv.min())  # lado aberto = sem truncamento naquele lado
+        sug_hi = r_hi if r_hi is not None else float(xv.max())
+    else:
+        sug_lo = oa["lo"] if np.isfinite(oa["lo"]) else float(xv.min())
+        sug_hi = oa["hi"] if np.isfinite(oa["hi"]) else float(xv.max())
     a, b, c = st.columns(3)
-    sug_lo = oa["lo"] if np.isfinite(oa["lo"]) else float(xv.min())
-    sug_hi = oa["hi"] if np.isfinite(oa["hi"]) else float(xv.max())
     t_lo = a.number_input("Limite inferior de truncamento", value=float(round(sug_lo, 4)), format="%.4f")
     t_hi = b.number_input("Limite superior de truncamento", value=float(round(sug_hi, 4)), format="%.4f")
     t_mode_lab = c.radio("Resultados fora dos limites", ["Excluir do cálculo", "Substituir pelo limite (winsorizar)"])
@@ -614,7 +645,7 @@ with tab3:
         with pd.ExcelWriter(buf, engine="openpyxl") as xw:
             mm.config_table(cfg, lim, {
                 "arquivo": up.name, "aba": sheet, "coluna resultado": c_res,
-                "origem do alvo": tgt_mode, "origem do DP": sd_mode,
+                "origem do alvo": tgt_mode, "origem do DP": sd_mode, "sugestão de truncamento": src,
                 "exclusão de outliers": f"{tr_label}, k={k_tukey}, iterativo={iterative}" if use_out else "não",
                 "falso alarme (% pontos)": round(fa["% pontos em alarme"], 3),
                 "episódios de alarme": fa["episódios de alarme"], "tipo de bias": kind,

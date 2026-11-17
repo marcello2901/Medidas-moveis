@@ -99,6 +99,34 @@ def build_datetime(df: pd.DataFrame, date_col: str | None, time_col: str | None)
     return d.dt.normalize() + td
 
 
+_NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
+_UPPER_ONLY = ("<", "≤", "ate ", "até ", "inferior", "menor", "abaixo", "up to")
+_LOWER_ONLY = (">", "≥", "superior", "maior", "acima", "above")
+
+
+def parse_ref_range(text) -> tuple[float | None, float | None] | None:
+    """Converte texto de intervalo de referência em (inferior, superior).
+
+    '2.52 - 39.20' → (2.52, 39.2) · '3,50 - 5,10' → (3.5, 5.1) · '< 5,0' / 'até 5' → (None, 5.0)
+    '> 10' → (10.0, None) · texto sem número → None. Lado aberto = None.
+    """
+    if text is None or (isinstance(text, float) and np.isnan(text)) or pd.isna(text):
+        return None
+    t = str(text).strip().lower()
+    nums = [float(n.replace(",", ".")) for n in _NUM_RE.findall(t)]
+    if not nums:
+        return None
+    if t.startswith("-") and len(nums) >= 1:  # limite inferior negativo (ex.: '-2 - 2')
+        nums[0] = -nums[0]
+    if len(nums) >= 2:
+        return (min(nums[0], nums[1]), max(nums[0], nums[1]))
+    if t.startswith(_UPPER_ONLY) or any(w in t for w in _UPPER_ONLY[2:]):
+        return (None, nums[0])
+    if t.startswith(_LOWER_ONLY) or any(w in t for w in _LOWER_ONLY[2:]):
+        return (nums[0], None)
+    return None
+
+
 @dataclass
 class ColumnMap:
     result: str
@@ -107,6 +135,7 @@ class ColumnMap:
     age: str | None = None
     sex: str | None = None
     group: str | None = None  # ex.: equipamento
+    ref: str | None = None    # intervalo de referência (texto, ex.: "2.52 - 39.20")
 
 
 def prepare_dataset(df: pd.DataFrame, cmap: ColumnMap) -> tuple[pd.DataFrame, dict]:
@@ -118,6 +147,7 @@ def prepare_dataset(df: pd.DataFrame, cmap: ColumnMap) -> tuple[pd.DataFrame, di
     out["age"] = parse_age(df[cmap.age]) if cmap.age else np.nan
     out["sex"] = df[cmap.sex].astype("string").str.strip() if cmap.sex else pd.NA
     out["group"] = df[cmap.group].astype("string").str.strip() if cmap.group else pd.NA
+    out["ref"] = df[cmap.ref].astype("string").str.strip() if cmap.ref else pd.NA
 
     rep = {"linhas_lidas": len(out), "sem_resultado_numerico": int(out["val"].isna().sum())}
     out = out[out["val"].notna()]

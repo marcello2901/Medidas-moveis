@@ -21,11 +21,13 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 - Média/mediana por idade (painel de cima) × nº de resultados por idade (painel de baixo), opcionalmente por sexo. Perfil por hora do dia.
 
 **2 · Configuração**
-- Truncamento (excluir ou winsorizar), sexo, faixa de idade.
+- Truncamento (excluir ou winsorizar), sexo, faixa de idade. Sugestão inicial dos limites: intervalo de referência lido da planilha (coluna detectada automaticamente, ex.: "Ref. ranges"; se houver vários, escolhe-se qual) ou cercas de Tukey da etapa 1.
 - Estatística: média móvel, mediana móvel, média móvel ponderada (pesos lineares, o mais recente pesa N) e EWMA (λ padrão = 2/(N+1)).
 - Bloco **N-n**: bloco de N resultados elegíveis, novo ponto a cada n resultados.
 - Limites alvo ± k·DP (alvo/DP da própria série ou manuais, como no Lab Operations); regra de pontos consecutivos.
+- Média-alvo e DP: média/DP dos blocos plotados ou manuais.
 - Gráfico com alarmes, taxa de falso alarme (% pontos, episódios, episódios/dia).
+- "Ver por equipamento" (2+ equipamentos selecionados): fluxo, alvo e DP próprios de cada equipamento, todos no mesmo gráfico em cores diferentes, com tabela de métricas por equipamento e a linha do fluxo combinado para comparação.
 
 **3 · Simulação de bias**
 - Bias (% ou unidade) injetado em posições aleatórias do fluxo real e mantido até o fim do horizonte. Entra antes do truncamento.
