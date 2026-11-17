@@ -17,6 +17,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import mm_core as mm
+import report
 
 st.set_page_config(page_title="Configurador de Medidas Móveis", layout="wide")
 
@@ -108,6 +109,7 @@ c_inst = st.sidebar.selectbox("Coluna do equipamento", [NONE] + cols, index=gues
 
 df = raw.copy()
 sel_i: list[str] = []
+sel_t = None
 if c_test != NONE:
     tests = sorted(df[c_test].dropna().astype(str).unique())
     sel_t = st.sidebar.selectbox("Teste", tests) if tests else None
@@ -321,6 +323,7 @@ with tab1:
                     width="stretch")
 
     data2 = data[oa["keep"]].reset_index(drop=True) if use_out else data
+    age_info = None
 
     if has_age:
         st.subheader("Resultado por idade × quantidade de resultados")
@@ -329,6 +332,8 @@ with tab1:
         stat_age = b.radio("Estatística", ["média", "mediana"], horizontal=True)
         by_sex = c.checkbox("Separar por sexo", value=has_sex, disabled=not has_sex)
         ap = mm.age_profile(data2, width, "mean" if stat_age == "média" else "median", by_sex and has_sex)
+        age_info = {"df": ap, "stat_label": stat_age.capitalize(), "by_sex": bool(by_sex and has_sex), "width": width,
+                    "geral": float(np.mean(data2["val"]) if stat_age == "média" else np.median(data2["val"]))}
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4], vertical_spacing=0.06,
                             subplot_titles=(f"{stat_age.capitalize()} do resultado", "Nº de resultados"))
         groups = [(None, ap)] if not (by_sex and has_sex) else list(ap.groupby("sex", dropna=False))
@@ -372,30 +377,52 @@ with tab2:
         vc = data2["ref"].dropna().value_counts()
         ref_opts = [(txt, int(n), mm.parse_ref_range(txt)) for txt, n in vc.items()]
         ref_opts = [o for o in ref_opts if o[2] is not None]
-    src_opts = (["Intervalo de referência da planilha"] if ref_opts else []) + ["Cercas de Tukey (etapa 2)"]
+    SRC_RI, SRC_TK, SRC_PC, SRC_MAN = ("Intervalo de referência da planilha", "Cercas de Tukey (etapa 2)",
+                                       "Percentis dos resultados", "Manual")
+    src_opts = ([SRC_RI] if ref_opts else []) + [SRC_TK, SRC_PC, SRC_MAN]
     a, b = st.columns([1, 2])
-    src = a.radio("Sugestão de truncamento", src_opts,
-                  help="Define o valor inicial dos limites abaixo. Os limites continuam editáveis.")
+    src = a.radio("Origem dos limites de truncamento", src_opts,
+                  help="Para digitar valores próprios, escolha 'Manual' e informe a fonte.")
     if cmap.ref and not ref_opts:
-        b.info("A coluna de intervalo de referência não tem textos reconhecíveis (ex.: '2.52 - 39.20'). Usando Tukey.")
-    if src.startswith("Intervalo"):
+        b.info("A coluna de intervalo de referência não tem textos reconhecíveis (ex.: '2.52 - 39.20').")
+    tk_lo = oa["lo"] if np.isfinite(oa["lo"]) else float(xv.min())
+    tk_hi = oa["hi"] if np.isfinite(oa["hi"]) else float(xv.max())
+    tk_src = (f"Cercas de Tukey (k = {fmt(k_tukey, 1)}{', iterativo' if iterative else ''}) "
+              f"sobre dados com transformação {tr_label.lower()}")
+    if src == SRC_RI or (src == SRC_MAN and ref_opts):
         tot = sum(o[1] for o in ref_opts)
-        ref_sel = b.selectbox(
-            "Intervalo a usar", ref_opts,
-            format_func=lambda o: f"{o[0]}  ({o[1]} resultados, {100 * o[1] / tot:.1f}%)")
-        if len(ref_opts) > 1:
+        ref_sel = (b.selectbox("Intervalo a usar", ref_opts,
+                               format_func=lambda o: f"{o[0]}  ({o[1]} resultados, {100 * o[1] / tot:.1f}%)")
+                   if src == SRC_RI else ref_opts[0])
+        if src == SRC_RI and len(ref_opts) > 1:
             b.caption(f"A coluna tem {len(ref_opts)} intervalos diferentes (em geral por idade/sexo). O truncamento "
                       "usa um único par de limites: escolha o intervalo da população que o perfil vai cobrir e "
                       "ajuste o filtro de sexo/idade abaixo de acordo.")
         r_lo, r_hi = ref_sel[2]
         sug_lo = r_lo if r_lo is not None else float(xv.min())  # lado aberto = sem truncamento naquele lado
         sug_hi = r_hi if r_hi is not None else float(xv.max())
+        trunc_src = f"Intervalo de referência da planilha ({ref_sel[0]})"
     else:
-        sug_lo = oa["lo"] if np.isfinite(oa["lo"]) else float(xv.min())
-        sug_hi = oa["hi"] if np.isfinite(oa["hi"]) else float(xv.max())
+        sug_lo, sug_hi, trunc_src = tk_lo, tk_hi, tk_src
+    if src == SRC_PC:
+        pa, pb = b.columns(2)
+        p_lo = pa.number_input("Percentil inferior", 0.0, 50.0, 2.5, 0.5)
+        p_hi = pb.number_input("Percentil superior", 50.0, 100.0, 97.5, 0.5)
+        sug_lo, sug_hi = (float(v_) for v_ in np.percentile(xv, [p_lo, p_hi]))
+        trunc_src = (f"Percentis P{fmt(p_lo, 1)} e P{fmt(p_hi, 1)} dos {fmt(len(xv), 0)} resultados "
+                     "(após filtros de teste/equipamento" + (" e exclusão de outliers)" if use_out else ")"))
+    if src == SRC_MAN:
+        man_src = b.text_input("Fonte dos limites de truncamento *",
+                               placeholder="ex.: bula do fabricante; literatura (autor, ano); decisão do setor em dd/mm",
+                               key="fonte_trunc")
+        trunc_src = f"Manual: {man_src.strip()}" if man_src.strip() else "Manual (fonte não informada)"
+        if not man_src.strip():
+            b.warning("Informe a fonte: ela vai para o relatório em PDF.")
     a, b, c = st.columns(3)
-    t_lo = a.number_input("Limite inferior de truncamento", value=float(round(sug_lo, 4)), format="%.4f")
-    t_hi = b.number_input("Limite superior de truncamento", value=float(round(sug_hi, 4)), format="%.4f")
+    t_lo = a.number_input("Limite inferior de truncamento", value=float(round(sug_lo, 4)), format="%.4f",
+                          disabled=src != SRC_MAN)
+    t_hi = b.number_input("Limite superior de truncamento", value=float(round(sug_hi, 4)), format="%.4f",
+                          disabled=src != SRC_MAN)
     t_mode_lab = c.radio("Resultados fora dos limites", ["Excluir do cálculo", "Substituir pelo limite (winsorizar)"])
     t_mode = "exclude" if t_mode_lab.startswith("Excluir") else "winsor"
 
@@ -452,18 +479,29 @@ with tab2:
     tgt_manual = tgt_mode == "Manual"
     if tgt_manual:
         tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
+        f_ = b.text_input("Fonte do alvo *", placeholder="ex.: alvo cadastrado no Lab Operations em dd/mm",
+                          key="fonte_alvo").strip()
+        tgt_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+        if not f_:
+            b.warning("Informe a fonte do alvo.")
     else:
         tgt = blocks_mean
         b.caption(f"Alvo = {fmt(blocks_mean, 4)} ({len(ser)} blocos)")
+        tgt_src = f"Média dos {fmt(len(ser), 0)} blocos plotados (média das médias móveis)"
     sd_mode = c.radio("DP", ["DP dos blocos plotados", "Manual"])
     if "dp_manual" not in st.session_state:
         st.session_state["dp_manual"] = round(blocks_sd, 4)
     sd_manual = sd_mode == "Manual"
     if sd_manual:
         sdv = c.number_input("DP manual", min_value=0.0, format="%.4f", key="dp_manual")
+        f_ = c.text_input("Fonte do DP *", placeholder="ex.: DP da série histórica jan–mar/2026", key="fonte_dp").strip()
+        sd_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+        if not f_:
+            c.warning("Informe a fonte do DP.")
     else:
         sdv = blocks_sd
         c.caption(f"DP = {fmt(blocks_sd, 4)}")
+        sd_src = f"DP dos {fmt(len(ser), 0)} blocos plotados (DP das médias móveis)"
     consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
     multi_inst = len(sel_i) > 1
     by_inst = st.checkbox(
@@ -651,6 +689,119 @@ with tab2:
         st.caption("Com limites calculados da própria série, o % de pontos em alarme fica parecido entre as estatísticas. "
                    "O que muda é quantos episódios isso gera e, principalmente, a detecção de erro (etapa 4).")
 
+
+    # ------------------------------------------------------------------ relatório PDF
+    st.subheader("Relatório em PDF")
+    st.caption("Resume a configuração escolhida nesta etapa para documentar o estudo. A simulação de bias não entra.")
+    eq_short = short_names([g.strip() for g in sel_i]) if sel_i else {}
+    with st.form("form_pdf"):
+        a, b = st.columns(2)
+        rp_analito = a.text_input("Analito", value=str(sel_t) if sel_t else c_res)
+        rp_setor = b.text_input("Laboratório / setor")
+        a, b, c = st.columns(3)
+        rp_elab = a.text_input("Elaborado por")
+        rp_rev = b.text_input("Revisado por")
+        rp_apr = c.text_input("Aprovado por")
+        rp_obs = st.text_area("Observações (opcional)", height=80)
+        gen = st.form_submit_button("Gerar relatório PDF", type="primary")
+    if gen:
+        pct_out = 100 * oa["n_out"] / len(data) if len(data) else 0
+        prep_rows = [
+            ["Exclusão de outliers",
+             (f"Sim: {fmt(oa['n_out'], 0)} resultados removidos ({fmt(pct_out, 2)}%). Cercas de Tukey "
+              f"(k = {fmt(k_tukey, 1)}{', iterativo' if iterative else ''}) sobre dados com transformação "
+              f"{tr_label.lower()}: {fmt(oa['lo'])} a {fmt(oa['hi'])}.") if use_out else "Não"],
+            ["Filtro de sexo", "Todos" if cfg.sexes is None else ", ".join(cfg.sexes)],
+            ["Filtro de idade", "Todas as idades" if (cfg.age_min is None and cfg.age_max is None) else
+             f"{fmt(cfg.age_min, 0) if cfg.age_min is not None else 'mín.'} a "
+             f"{fmt(cfg.age_max, 0) if cfg.age_max is not None else 'máx.'} anos"],
+            ["Ordem dos resultados", f"Cronológica ({c_date}{' + ' + c_time if cmap.time else ''})" if has_time
+             else "Ordem das linhas da planilha"],
+            ["Resultados lidos", f"{fmt(rep['linhas_validas'], 0)} válidos de {fmt(rep['linhas_lidas'], 0)} linhas "
+             "(descartadas: sem resultado numérico" + (" ou sem data/hora)" if has_time else ")")],
+        ]
+        if multi_inst:
+            prep_rows.append(["Equipamentos", "Fluxos avaliados separadamente por equipamento" if by_inst else
+                              "Fluxo único com os equipamentos em ordem cronológica"])
+        cfg_rows = [
+            ["Tipo de medida móvel", stat_lab, "—"],
+            ["Tamanho do bloco (N)", f"{N} resultados", "—"],
+            ["Novo ponto a cada (pulo)", f"{step} resultado{'s' if step > 1 else ''}", f"Configuração {N}-{step}"],
+        ]
+        if stat == "EWMA":
+            cfg_rows.append(["Fator lambda (EWMA)", fmt(cfg.lam_eff, 4), "2/(N+1)" if lam is None or
+                             abs(lam - 2 / (N + 1)) < 1e-4 else "Definido pelo usuário"])
+        cfg_rows += [
+            ["Truncamento inferior", fmt(t_lo, 4), trunc_src],
+            ["Truncamento superior", fmt(t_hi, 4), trunc_src],
+            ["Resultados fora do truncamento", "Excluídos do cálculo" if t_mode == "exclude" else
+             "Substituídos pelo limite", f"{fmt(n_trunc, 0)} resultados ({fmt(100 * n_trunc / max(pop.sum(), 1), 1)}%) "
+             "no período"],
+        ]
+        tag = " (fluxo combinado)" if by_inst else ""
+        lim_rows = [
+            [f"Valor-alvo{tag}", fmt(lim["alvo"], 4), tgt_src],
+            [f"DP{tag}", fmt(lim["DP"], 4), sd_src],
+            ["Multiplicador k", fmt(cfg.k, 1), "Limites = alvo ± k × DP"],
+            [f"Limite inferior (LI){tag}", fmt(lim["LI"], 4), "alvo - k × DP"],
+            [f"Limite superior (LS){tag}", fmt(lim["LS"], 4), "alvo + k × DP"],
+            ["Regra de alarme", "1 ponto fora" if cfg.consec == 1 else f"{cfg.consec} pontos consecutivos fora",
+             "Mesmo lado do alvo" if cfg.consec > 1 else "—"],
+        ]
+        lim_eq = None
+        x_is_time = has_time
+        if by_inst and inst_res:
+            lim_eq = pd.DataFrame([{
+                "Equipamento": r_["short"], "Alvo": fmt(r_["lim"]["alvo"], 4) if r_["lim"] else "—",
+                "DP": fmt(r_["lim"]["DP"], 4) if r_["lim"] else "—", "LI": fmt(r_["lim"]["LI"], 4) if r_["lim"] else "—",
+                "LS": fmt(r_["lim"]["LS"], 4) if r_["lim"] else "—",
+                "Pontos fora (%)": fmt(r_["fa"]["% pontos em alarme"], 1) if r_["fa"] else "—"} for r_ in inst_res])
+            itens = [{"nome": r_["short"], "x": r_["ser"]["t"] if x_is_time else r_["ser"]["seq"], "y": r_["ser"]["valor"],
+                      "lim": r_["lim"], "alarme": mm.alarm_flags(r_["ser"]["valor"].to_numpy(), r_["lim"], cfg.consec)}
+                     for r_ in inst_res if r_["lim"] is not None][:len(CAT)]
+            fig_note = ("Cada equipamento com fluxo, alvo e DP próprios" if not (tgt_manual or sd_manual)
+                        else "Alvo/DP manuais aplicados a todos os equipamentos")
+        else:
+            itens = [{"nome": stat_lab, "x": ser["t"] if x_is_time else ser["seq"], "y": ser["valor"], "lim": lim,
+                      "alarme": mm.alarm_flags(ser["valor"].to_numpy(), lim, cfg.consec)}]
+            fig_note = (f"{fmt(fa['% pontos em alarme'], 1)}% dos pontos fora dos limites; "
+                        f"{fa['episódios de alarme']} episódios de alarme no período")
+        if age_info:
+            age_info["legenda"] = (f"Figura 1 – {age_info['stat_label']} do resultado (painel superior) e número de "
+                                   f"resultados (painel inferior) por idade, faixas de {age_info['width']} ano(s)"
+                                   + (", por sexo" if age_info["by_sex"] else "") + ". Linha pontilhada: "
+                                   f"{age_info['stat_label'].lower()} geral.")
+        period = (f"{data2['t'].min():%d/%m/%Y} a {data2['t'].max():%d/%m/%Y}" if has_time else "—")
+        equip_txt = (", ".join(eq_short.get(g.strip(), g) for g in sel_i) if sel_i else "Não informado")
+        info = {
+            "titulo": "Relatório de configuração da medida móvel",
+            "subtitulo": f"{rp_analito} · {stat_lab} {N}-{step} · " + (
+                eq_short.get(sel_i[0].strip(), sel_i[0]) if len(sel_i) == 1 else
+                f"{len(sel_i)} equipamentos" if sel_i else "equipamento não informado"),
+            "analito": rp_analito,
+            "equip_curto": (eq_short.get(sel_i[0].strip(), sel_i[0]) if len(sel_i) == 1 else
+                            f"{len(sel_i)} equipamentos" if sel_i else ""),
+            "identificacao": [("Analito", rp_analito), ("Equipamento(s)", equip_txt),
+                              ("Laboratório / setor", rp_setor or "—"),
+                              ("Período dos dados", period), ("Resultados avaliados", fmt(len(data2), 0)),
+                              ("Arquivo de origem", f"{up.name}" + (f" (aba {sheet})" if sheet else ""))],
+            "preparo": prep_rows, "idade": age_info,
+            "config": cfg_rows, "limites": lim_rows, "limites_equip": lim_eq,
+            "serie": {"itens": itens, "x_is_time": x_is_time, "ylabel": stat_lab.split(" (")[0].lower(),
+                      "legenda": f"Figura {2 if age_info else 1} – {stat_lab} {N}-{step} calculada sobre os dados do "
+                                 f"período, com alvo (pontilhado) e limites LI/LS (tracejado). {fig_note}."},
+            "observacoes": rp_obs, "elaborado": rp_elab, "revisado": rp_rev, "aprovado": rp_apr,
+            "emitido": pd.Timestamp.now(tz="America/Sao_Paulo").to_pydatetime(),
+        }
+        with st.spinner("Gerando PDF…"):
+            st.session_state["pdf"] = report.build_pdf(info)
+            st.session_state["pdf_name"] = (f"relatorio_medida_movel_{rp_analito}_{stat}_{N}-{step}.pdf"
+                                            .replace(" ", "_").replace("/", "-"))
+    if "pdf" in st.session_state:
+        st.download_button("Baixar relatório PDF", st.session_state["pdf"], file_name=st.session_state["pdf_name"],
+                           mime="application/pdf")
+        st.caption("O PDF reflete a configuração do momento em que foi gerado. Mudou algo? Gere de novo.")
+
 # =============================================================================
 # Etapa 4 — simulação de bias
 # =============================================================================
@@ -785,7 +936,7 @@ with tab3:
         with pd.ExcelWriter(buf, engine="openpyxl") as xw:
             mm.config_table(cfg, lim, {
                 "arquivo": up.name, "aba": sheet, "coluna resultado": c_res,
-                "origem do alvo": tgt_mode, "origem do DP": sd_mode, "sugestão de truncamento": src,
+                "origem do alvo": tgt_mode, "origem do DP": sd_mode, "fonte do truncamento": trunc_src, "fonte do alvo": tgt_src, "fonte do DP": sd_src,
                 "exclusão de outliers": f"{tr_label}, k={k_tukey}, iterativo={iterative}" if use_out else "não",
                 "falso alarme (% pontos)": round(fa["% pontos em alarme"], 3),
                 "episódios de alarme": fa["episódios de alarme"], "tipo de bias": kind,

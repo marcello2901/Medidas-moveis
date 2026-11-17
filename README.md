@@ -25,13 +25,15 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 - Média/mediana por idade (painel de cima) × nº de resultados por idade (painel de baixo), opcionalmente por sexo. Perfil por hora do dia.
 
 **3 · Configuração**
-- Truncamento (excluir ou winsorizar), sexo, faixa de idade. Sugestão inicial dos limites: intervalo de referência lido da planilha (coluna detectada automaticamente, ex.: "Ref. ranges"; se houver vários, escolhe-se qual) ou cercas de Tukey da etapa 2.
+- Truncamento (excluir ou winsorizar), sexo, faixa de idade. Origem dos limites: intervalo de referência lido da planilha (coluna detectada automaticamente, ex.: "Ref. ranges"; se houver vários, escolhe-se qual), cercas de Tukey da etapa 2, percentis dos resultados ou manual (com campo obrigatório de fonte).
 - Estatística: média móvel, mediana móvel, média móvel ponderada (pesos lineares, o mais recente pesa N) e EWMA (λ padrão = 2/(N+1)).
 - Bloco **N-n**: bloco de N resultados elegíveis, novo ponto a cada n resultados.
 - Limites alvo ± k·DP (alvo/DP da própria série ou manuais, como no Lab Operations); regra de pontos consecutivos.
-- Média-alvo e DP: média/DP dos blocos plotados ou manuais.
+- Média-alvo e DP: média/DP dos blocos plotados ou manuais (com campo de fonte).
 - Gráfico com alarmes, taxa de falso alarme (% pontos, episódios, episódios/dia).
 - "Ver por equipamento" (2+ equipamentos selecionados): fluxo, alvo e DP próprios de cada equipamento, todos no mesmo gráfico em cores diferentes, com tabela de métricas por equipamento e a linha do fluxo combinado para comparação.
+
+- Relatório em PDF (A4): identificação, preparo dos dados (exclusão de outliers, filtros), gráfico média × nº de resultados por idade, configuração (tipo, bloco, pulo, truncamento e fontes), alvo/DP/limites e fontes (por equipamento, se ativado), gráfico da medida móvel e campos de assinatura. Não inclui a simulação de bias.
 
 **4 · Simulação de bias**
 - Bias (% ou unidade) injetado em posições aleatórias do fluxo real e mantido até o fim do horizonte. Entra antes do truncamento.
@@ -43,3 +45,4 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 ## Arquivos
 - `app.py`: interface
 - `mm_core.py`: cálculos (sem dependência do Streamlit, reutilizável em scripts)
+- `report.py`: geração do relatório PDF (reportlab + matplotlib)
