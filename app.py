@@ -1,0 +1,505 @@
+"""
+Configurador de Medidas Móveis (PBRTQC)
+Etapa 1: preparo dos dados · Etapa 2: configuração · Etapa 3: simulação de bias
+
+Executar:  streamlit run app.py
+"""
+from __future__ import annotations
+
+import io
+from dataclasses import replace
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+import mm_core as mm
+
+st.set_page_config(page_title="Configurador de Medidas Móveis", layout="wide")
+
+# Paleta (categórica em ordem fixa + cores de papel)
+C1, C2, C3, C4 = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
+SEX_COLORS = [C1, C2, C3, C4]
+INK, MUTED, ALARM = "#3d3d3a", "#8a8984", "#e34948"
+NONE = "— nenhuma —"
+ROW_ORDER = "— ordem das linhas da planilha —"
+
+
+def base_layout(fig: go.Figure, height: int = 380, **kw) -> go.Figure:
+    kw.setdefault("hovermode", "x unified")
+    fig.update_layout(height=height, template="plotly_white", margin=dict(l=10, r=70, t=90, b=10),
+                      title=dict(text=kw.pop("title", None), y=0.98, yanchor="top"),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0), **kw)
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="#ececea")
+    return fig
+
+
+def guess(cols: list[str], prefs: list[str], fallback: int = 0) -> int:
+    low = [c.lower().strip() for c in cols]
+    for p in prefs:  # correspondência exata primeiro
+        if p in low:
+            return low.index(p)
+    for p in prefs:
+        for i, c in enumerate(low):
+            if p in c:
+                return i
+    return fallback
+
+
+def fmt(x, nd=3):
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return "—"
+    return f"{x:,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+@st.cache_data(show_spinner=False)
+def cached_read(b: bytes, name: str, sheet: str | None):
+    return mm.read_table(b, name, sheet)
+
+
+@st.cache_data(show_spinner=False)
+def cached_sheets(b: bytes, name: str):
+    return mm.list_sheets(b, name)
+
+
+# =============================================================================
+# Barra lateral — upload e mapeamento de colunas
+# =============================================================================
+st.sidebar.title("Dados de entrada")
+up = st.sidebar.file_uploader("Planilha (xlsx, xls ou csv)", type=["xlsx", "xlsm", "xls", "csv", "txt"])
+
+st.title("Configurador de Medidas Móveis")
+if up is None:
+    st.info("Envie a planilha na barra lateral. Ela precisa ter, no mínimo, uma coluna de **resultado** e "
+            "uma de **data/hora** (a ordem cronológica é essencial para simular a medida móvel). "
+            "Idade, sexo, equipamento e teste são opcionais.")
+    st.stop()
+
+fbytes = up.getvalue()
+sheets = cached_sheets(fbytes, up.name)
+sheet = st.sidebar.selectbox("Aba", sheets) if sheets else None
+raw = cached_read(fbytes, up.name, sheet)
+cols = list(raw.columns)
+
+st.sidebar.subheader("Colunas")
+c_res = st.sidebar.selectbox("Resultado *", cols, index=guess(cols, ["resultado", "resultado numerico", "result", "valor", "value"]))
+date_opts = [ROW_ORDER] + cols
+c_date = st.sidebar.selectbox("Data (ou data e hora) *", date_opts,
+                              index=guess(date_opts, ["data,res", "data res", "data resultado", "data", "date", "datetime"]))
+time_opts = [NONE] + cols
+c_time = st.sidebar.selectbox("Hora (se estiver em coluna separada)", time_opts,
+                              index=guess(time_opts, ["hora,res", "hora res", "hora resultado", "hora", "time"]))
+c_age = st.sidebar.selectbox("Idade", [NONE] + cols, index=guess([NONE] + cols, ["idade", "age"]))
+c_sex = st.sidebar.selectbox("Sexo", [NONE] + cols, index=guess([NONE] + cols, ["sexo", "gender", "sex", "genero"]))
+
+st.sidebar.subheader("Filtros")
+c_test = st.sidebar.selectbox("Coluna do teste/analito", [NONE] + cols, index=guess([NONE] + cols, ["teste", "exame", "analito", "test"]))
+c_inst = st.sidebar.selectbox("Coluna do equipamento", [NONE] + cols, index=guess([NONE] + cols, ["instrument", "equipamento", "analisador", "instrumento"]))
+
+df = raw.copy()
+if c_test != NONE:
+    tests = sorted(df[c_test].dropna().astype(str).unique())
+    sel_t = st.sidebar.selectbox("Teste", tests) if tests else None
+    if sel_t:
+        df = df[df[c_test].astype(str) == sel_t]
+if c_inst != NONE:
+    insts = sorted(df[c_inst].dropna().astype(str).unique())
+    sel_i = st.sidebar.multiselect("Equipamento(s)", insts, default=insts[:1])
+    df = df[df[c_inst].astype(str).isin(sel_i)]
+    if len(sel_i) > 1:
+        st.sidebar.warning("Vários equipamentos viram um único fluxo em ordem cronológica. Na rotina a medida móvel "
+                           "é avaliada por equipamento: um erro em só um deles fica diluído aqui.")
+
+if df.empty:
+    st.error("Nenhuma linha após os filtros.")
+    st.stop()
+
+cmap = mm.ColumnMap(
+    result=c_res,
+    date=None if c_date == ROW_ORDER else c_date,
+    time=None if c_time == NONE or c_date == ROW_ORDER else c_time,
+    age=None if c_age == NONE else c_age,
+    sex=None if c_sex == NONE else c_sex,
+)
+data, rep = mm.prepare_dataset(df, cmap)
+has_time = cmap.date is not None
+has_age = cmap.age is not None and data["age"].notna().any()
+has_sex = cmap.sex is not None
+
+if len(data) < 30:
+    st.error(f"Só {len(data)} resultados numéricos válidos: insuficiente.")
+    st.stop()
+
+with st.sidebar.expander("Resumo da leitura", expanded=False):
+    st.write({k.replace("_", " "): v for k, v in rep.items()})
+    if has_time:
+        st.write(f"Período: {data['t'].min():%d/%m/%Y %H:%M} → {data['t'].max():%d/%m/%Y %H:%M}")
+if not has_time:
+    st.warning("Sem coluna de data: a ordem das linhas da planilha será tomada como ordem cronológica.")
+
+tab1, tab2, tab3 = st.tabs(["1 · Preparo dos dados", "2 · Configuração da ferramenta", "3 · Simulação de bias"])
+
+# =============================================================================
+# Etapa 1 — preparo dos dados
+# =============================================================================
+with tab1:
+    x = data["val"].to_numpy()
+    desc = mm.describe(x)
+    cols_m = st.columns(6)
+    for c, k in zip(cols_m, ["n", "média", "DP", "mediana", "CV%", "assimetria"]):
+        c.metric(k, fmt(desc[k], 0 if k == "n" else 3))
+
+    st.subheader("Outliers: transformação + Tukey")
+    a, b, c, d_ = st.columns([1.4, 1, 1, 1.4])
+    tr_label = a.radio("Transformação antes do Tukey", ["Box-Cox", "Logarítmica", "Nenhuma (dados brutos)"], horizontal=False)
+    tr = {"Box-Cox": "boxcox", "Logarítmica": "log", "Nenhuma (dados brutos)": "none"}[tr_label]
+    k_tukey = b.number_input("k do Tukey (IQR)", 0.5, 5.0, 1.5, 0.5, help="1,5 = outlier; 3,0 = outlier extremo")
+    iterative = c.checkbox("Tukey iterativo", help="Repete até não restarem outliers")
+    use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 2 e 3", value=False,
+                        help="O Lab Operations não aplica essa exclusão em tempo real. Se ligar, as simulações usam "
+                             "uma população mais limpa do que a que o middleware vai receber.")
+    oa = mm.outlier_analysis(x, tr, k_tukey, iterative)
+    st.caption(
+        f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
+        f"{oa['n_out']} resultados fora ({100 * oa['n_out'] / len(x):.2f}%). "
+        + (f"λ Box-Cox = {oa['lambda']:.3f}. " if "lambda" in oa else "")
+        + "Essas cercas são a sugestão inicial de truncamento na etapa 2."
+    )
+    if use_out:
+        st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 2 e 3.")
+
+    h1, h2 = st.columns(2)
+    fig = go.Figure(go.Histogram(x=x, nbinsx=60, marker_color=C1, name="resultados"))
+    for v, lab in [(oa["lo"], "cerca inf."), (oa["hi"], "cerca sup.")]:
+        if np.isfinite(v):
+            fig.add_vline(x=v, line_dash="dash", line_color=ALARM, annotation_text=lab)
+    h1.plotly_chart(base_layout(fig, 320, title="Distribuição original", showlegend=False, bargap=0.05),
+                    width="stretch")
+    fig = go.Figure(go.Histogram(x=oa["y"], nbinsx=60, marker_color=C3))
+    fig.add_vline(x=oa["lo_t"], line_dash="dash", line_color=ALARM)
+    fig.add_vline(x=oa["hi_t"], line_dash="dash", line_color=ALARM)
+    h2.plotly_chart(base_layout(fig, 320, title=f"Escala transformada ({tr_label})", showlegend=False, bargap=0.05),
+                    width="stretch")
+
+    data2 = data[oa["keep"]].reset_index(drop=True) if use_out else data
+
+    if has_age:
+        st.subheader("Resultado por idade × quantidade de resultados")
+        a, b, c = st.columns(3)
+        width = a.selectbox("Faixa etária (anos)", [1, 2, 5, 10], index=0)
+        stat_age = b.radio("Estatística", ["média", "mediana"], horizontal=True)
+        by_sex = c.checkbox("Separar por sexo", value=has_sex, disabled=not has_sex)
+        ap = mm.age_profile(data2, width, "mean" if stat_age == "média" else "median", by_sex and has_sex)
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4], vertical_spacing=0.06,
+                            subplot_titles=(f"{stat_age.capitalize()} do resultado", "Nº de resultados"))
+        groups = [(None, ap)] if not (by_sex and has_sex) else list(ap.groupby("sex", dropna=False))
+        for i, (g, sub) in enumerate(groups):
+            name = "todos" if g is None else str(g)
+            col = SEX_COLORS[i % 4]
+            fig.add_trace(go.Scatter(x=sub["faixa"], y=sub["valor"], mode="lines+markers", name=name,
+                                     line=dict(color=col, width=2), marker=dict(size=6),
+                                     customdata=sub["n"], hovertemplate="%{y:.3f} (n=%{customdata})"), 1, 1)
+            fig.add_trace(go.Bar(x=sub["faixa"], y=sub["n"], name=name, marker_color=col, showlegend=False,
+                                 hovertemplate="n=%{y}"), 2, 1)
+        fig.add_hline(y=np.mean(data2["val"]) if stat_age == "média" else np.median(data2["val"]),
+                      line_dash="dot", line_color=MUTED, row=1, col=1)
+        fig.update_layout(barmode="group", bargap=0.1)
+        fig.update_xaxes(title_text="idade (anos)", row=2, col=1)
+        st.plotly_chart(base_layout(fig, 520), width="stretch")
+        st.caption("Faixas com muitos resultados e média distante da linha pontilhada (média geral) são as que mais "
+                   "deslocam a medida móvel quando a composição da população muda. Candidatas a filtro na etapa 2.")
+    else:
+        st.info("Informe a coluna de idade para ver o gráfico por idade.")
+
+    if has_time:
+        with st.expander("Resultado por hora do dia (mudança de população ao longo do dia)"):
+            hp = mm.hour_profile(data2)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4], vertical_spacing=0.08,
+                                subplot_titles=("Média do resultado", "Nº de resultados"))
+            fig.add_trace(go.Scatter(x=hp["hora"], y=hp["valor"], mode="lines+markers", line=dict(color=C1, width=2)), 1, 1)
+            fig.add_trace(go.Bar(x=hp["hora"], y=hp["n"], marker_color=C1), 2, 1)
+            fig.update_xaxes(title_text="hora", dtick=2, row=2, col=1)
+            st.plotly_chart(base_layout(fig, 420, showlegend=False), width="stretch")
+
+# =============================================================================
+# Etapa 2 — configuração
+# =============================================================================
+with tab2:
+    xv = data2["val"].to_numpy()
+    st.subheader("Truncamento e população")
+    a, b, c = st.columns(3)
+    sug_lo = oa["lo"] if np.isfinite(oa["lo"]) else float(xv.min())
+    sug_hi = oa["hi"] if np.isfinite(oa["hi"]) else float(xv.max())
+    t_lo = a.number_input("Limite inferior de truncamento", value=float(round(sug_lo, 4)), format="%.4f")
+    t_hi = b.number_input("Limite superior de truncamento", value=float(round(sug_hi, 4)), format="%.4f")
+    t_mode_lab = c.radio("Resultados fora dos limites", ["Excluir do cálculo", "Substituir pelo limite (winsorizar)"])
+    t_mode = "exclude" if t_mode_lab.startswith("Excluir") else "winsor"
+
+    a, b = st.columns(2)
+    sexes = None
+    if has_sex:
+        sex_vals = sorted(data2["sex"].dropna().astype(str).unique())
+        sel_sex = a.multiselect("Sexo", sex_vals, default=sex_vals)
+        sexes = None if set(sel_sex) == set(sex_vals) else tuple(sel_sex)
+    age_min = age_max = None
+    if has_age and data2["age"].min() < data2["age"].max():
+        amin, amax = float(np.floor(data2["age"].min())), float(np.ceil(data2["age"].max()))
+        r = b.slider("Faixa de idade (anos)", amin, amax, (amin, amax), step=1.0)
+        age_min = r[0] if r[0] > amin else None
+        age_max = r[1] if r[1] < amax else None
+        if age_min is not None or age_max is not None:
+            b.caption("Resultados sem idade são excluídos quando há filtro de idade.")
+
+    st.subheader("Ferramenta")
+    a, b, c, d_ = st.columns(4)
+    stat_lab = a.selectbox("Estatística", list(mm.STAT_LABELS.values()))
+    stat = [k for k, v in mm.STAT_LABELS.items() if v == stat_lab][0]
+    N = int(b.number_input("Tamanho do bloco (N)", 2, 2000, 50, 5))
+    step = int(c.number_input("Novo ponto a cada n resultados", 1, 1000, 1, 1,
+                              help="50-5 = bloco de 50 resultados; novo ponto plotado a cada 5 resultados seguintes"))
+    lam = None
+    if stat == "EWMA":
+        lam = d_.number_input("λ (EWMA)", 0.001, 1.0, round(2 / (N + 1), 4), format="%.4f",
+                              help="Padrão 2/(N+1): mesmo 'centro de massa' da média móvel de N")
+    st.caption(f"Configuração **{N}-{step}**: bloco de {N} resultados elegíveis, novo ponto a cada {step}."
+               + (" O EWMA usa os N primeiros só para iniciar a série." if stat == "EWMA" else ""))
+
+    st.subheader("Limites de controle")
+    a, b, c, d_ = st.columns(4)
+    k_lim = a.number_input("k (limites = alvo ± k·DP)", 0.5, 6.0, 2.0, 0.5)
+    tgt_manual = b.checkbox("Alvo manual")
+    tgt = b.number_input("Alvo", value=float(round(np.mean(xv), 4)), format="%.4f", disabled=not tgt_manual)
+    sd_manual = c.checkbox("DP manual")
+    sdv = c.number_input("DP da medida móvel", value=0.0, min_value=0.0, format="%.4f", disabled=not sd_manual)
+    consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
+
+    cfg = mm.MMConfig(stat=stat, N=N, step=step, lam=lam, trunc_lo=t_lo, trunc_hi=t_hi, trunc_mode=t_mode,
+                      sexes=sexes, age_min=age_min, age_max=age_max, k=k_lim,
+                      target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None, consec=consec)
+
+    pop = mm.population_mask(data2, cfg)
+    elig, _ = mm.apply_truncation(xv, pop, cfg)
+    n_trunc = int((pop & ((xv < t_lo) | (xv > t_hi))).sum())
+    ser, ctx = mm.compute_series(data2, cfg)
+    if len(ser) < 5:
+        st.error(f"Só {int(elig.sum())} resultados elegíveis: insuficiente para bloco de {N}.")
+        st.stop()
+    lim = mm.control_limits(ser, cfg)
+    fa = mm.false_alarm_summary(ser, lim, cfg, ctx.n_stream)
+
+    cols_m = st.columns(6)
+    cols_m[0].metric("Resultados elegíveis", f"{int(elig.sum())} / {len(xv)}")
+    cols_m[1].metric("Fora do truncamento", f"{n_trunc} ({100 * n_trunc / max(pop.sum(), 1):.1f}%)")
+    cols_m[2].metric("Alvo", fmt(lim["alvo"]))
+    cols_m[3].metric("DP da série", fmt(lim["DP"], 4))
+    cols_m[4].metric("Pontos em alarme", f"{fa['% pontos em alarme']:.1f}%")
+    cols_m[5].metric("Episódios de alarme / dia" if has_time else "Episódios / 1000 res.",
+                     fmt(fa["episódios / dia"] if has_time else fa["episódios / 1000 resultados"], 2))
+    if not (tgt_manual or sd_manual):
+        st.caption("Alvo e DP calculados da própria série (dentro da amostra): com k=2 cerca de 5% dos pontos ficam "
+                   "fora por construção. Para avaliar limites já em uso no Lab Operations, informe alvo e DP manuais.")
+
+    a, b, c = st.columns([1, 1, 2])
+    xaxis = a.radio("Eixo X", ["data/hora", "sequência"], horizontal=True, disabled=not has_time)
+    show_raw = b.checkbox("Mostrar resultados individuais")
+    tea = c.number_input("Erro sistemático máximo permitido (%) para desenhar no gráfico (0 = não desenhar)",
+                         0.0, 100.0, 0.0, 0.5)
+
+    def series_figure(ser_, lim_, title, bias_start=None, raw_vals=None):
+        xs = ser_["t"] if (has_time and xaxis == "data/hora") else ser_["seq"]
+        al = mm.alarm_flags(ser_["valor"].to_numpy(), lim_, cfg.consec)
+        fig = go.Figure()
+        if raw_vals is not None:
+            rx = data2["t"] if (has_time and xaxis == "data/hora") else np.arange(1, len(data2) + 1)
+            fig.add_trace(go.Scattergl(x=rx, y=raw_vals, mode="markers", name="resultados",
+                                       marker=dict(size=3, color=MUTED, opacity=0.35), hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=xs, y=ser_["valor"], mode="lines", name=stat_lab, line=dict(color=C1, width=2),
+                                 hovertemplate="%{y:.4f}"))
+        fig.add_trace(go.Scatter(x=xs[al], y=ser_["valor"][al], mode="markers", name="alarme",
+                                 marker=dict(color=ALARM, size=8, line=dict(color="white", width=1.5)),
+                                 hovertemplate="alarme: %{y:.4f}"))
+        fig.add_hline(y=lim_["alvo"], line_color=INK, line_width=1, annotation_text="alvo", annotation_position="right")
+        for kname in ("LI", "LS"):
+            fig.add_hline(y=lim_[kname], line_color=ALARM, line_dash="dash", line_width=1,
+                          annotation_text=f"{kname} ({cfg.k:g} DP)", annotation_position="right")
+        if tea > 0:
+            for sgn in (-1, 1):
+                fig.add_hline(y=lim_["alvo"] * (1 + sgn * tea / 100), line_color=C4, line_dash="dot",
+                              annotation_text=f"ESM {'+' if sgn > 0 else '−'}{tea:g}%", annotation_position="left")
+        if bias_start is not None:  # shape + anotação (add_vline falha com eixo de datas)
+            fig.add_shape(type="line", x0=bias_start, x1=bias_start, yref="paper", y0=0, y1=1,
+                          line=dict(color=C2, width=2))
+            fig.add_annotation(x=bias_start, yref="paper", y=1, text="início do erro", showarrow=False,
+                               yanchor="bottom", font=dict(color=C2))
+        if raw_vals is None:
+            pad = (lim_["LS"] - lim_["LI"]) * 0.6
+            lo = min(lim_["LI"] - pad, ser_["valor"].min())
+            hi = max(lim_["LS"] + pad, ser_["valor"].max())
+            fig.update_yaxes(range=[lo, hi])
+        return base_layout(fig, 460, title=title, xaxis_title="data/hora" if (has_time and xaxis == "data/hora") else "nº do resultado")
+
+    st.plotly_chart(series_figure(ser, lim, f"{stat_lab}: {N}-{step}", raw_vals=xv if show_raw else None),
+                    width="stretch")
+
+    with st.expander("Comparar as quatro estatísticas com a mesma configuração (falsos alarmes)"):
+        rows = []
+        for s_key, s_lab in mm.STAT_LABELS.items():
+            cfg_s = replace(cfg, stat=s_key, lam=None)
+            ser_s, ctx_s = mm.compute_series(data2, cfg_s)
+            lim_s = mm.control_limits(ser_s, cfg_s)
+            fa_s = mm.false_alarm_summary(ser_s, lim_s, cfg_s, ctx_s.n_stream)
+            rows.append({"estatística": s_lab, "alvo": lim_s["alvo"], "DP": lim_s["DP"], "LI": lim_s["LI"], "LS": lim_s["LS"],
+                         "% pontos em alarme": fa_s["% pontos em alarme"], "episódios": fa_s["episódios de alarme"],
+                         "episódios / dia": fa_s["episódios / dia"]})
+        st.dataframe(pd.DataFrame(rows).round(4), hide_index=True, width="stretch")
+        st.caption("Com limites calculados da própria série, o % de pontos em alarme fica parecido entre as estatísticas. "
+                   "O que muda é quantos episódios isso gera e, principalmente, a detecção de erro (etapa 3).")
+
+# =============================================================================
+# Etapa 3 — simulação de bias
+# =============================================================================
+with tab3:
+    st.markdown(
+        "Um erro sistemático é injetado em pontos aleatórios do fluxo real de resultados e mantido daí em diante. "
+        "O erro entra **antes** do truncamento: um bias grande empurra resultados para fora dos limites e muda o que a "
+        "ferramenta enxerga. Para cada bias, mede-se **quantos resultados de pacientes são liberados entre o início do "
+        "erro e o alarme** (NPed). Só conta o alarme no sentido do erro. Os limites são os da etapa 2."
+    )
+    a, b, c, d_ = st.columns(4)
+    kind = a.radio("Tipo de bias", ["%", "unidade do resultado"], horizontal=True)
+    kind_k = "%" if kind == "%" else "abs"
+    default_b = "-10, -5, -3, -2, 2, 3, 5, 10" if kind_k == "%" else "-0.3, -0.2, -0.1, 0.1, 0.2, 0.3"
+    b_txt = b.text_input("Vieses a simular (separados por vírgula ou ;)", default_b)
+    n_sims = int(c.number_input("Simulações por bias", 20, 2000, 200, 20))
+    horizon = int(d_.number_input("Horizonte máx. (resultados após o erro)", 50, 100000,
+                                  int(min(1000, max(50, len(xv) // 3))), 50,
+                                  help="Sem alarme dentro do horizonte = não detectado"))
+    a, b = st.columns([1, 3])
+    seed = int(a.number_input("Semente aleatória", 0, 10**6, 42))
+    compare = b.checkbox("Comparar as quatro estatísticas (mesmo N, passo, truncamento, k e mesmos pontos de início)")
+
+    try:
+        biases = [float(t.replace(",", ".")) for t in b_txt.replace(";", " ").replace(", ", " ").split() if t.strip()]
+    except ValueError:
+        st.error("Lista de vieses inválida. Ex.: -10 -5 -3 3 5 10")
+        st.stop()
+    biases = [v for v in biases if v != 0]
+
+    sig = (up.name, len(data2), repr(cfg), tuple(biases), kind_k, n_sims, horizon, seed, compare)
+    if st.button("Rodar simulação", type="primary"):
+        results = {}
+        keys = list(mm.STAT_LABELS) if compare else [stat]
+        prog = st.progress(0.0, text="Simulando…")
+        try:
+            for i, s_key in enumerate(keys):
+                cfg_s = cfg if s_key == stat else replace(cfg, stat=s_key, lam=None)
+                ser_s, ctx_s = (ser, ctx) if s_key == stat else mm.compute_series(data2, cfg_s)
+                lim_s = lim if s_key == stat else mm.control_limits(ser_s, replace(cfg_s, target=None, sd=None))
+                fa_s = mm.false_alarm_summary(ser_s, lim_s, cfg_s, ctx_s.n_stream)
+                tab, rawsim, h_eff = mm.simulate_bias(ctx_s, cfg_s, lim_s, biases, kind_k, n_sims, horizon, seed)
+                results[s_key] = dict(tab=tab, raw=rawsim, h=h_eff, lim=lim_s, fa=fa_s)
+                prog.progress((i + 1) / len(keys), text=f"Simulando… {mm.STAT_LABELS[s_key]}")
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+        prog.empty()
+        st.session_state["sim"] = (sig, results)
+
+    if "sim" not in st.session_state:
+        st.info("Ajuste os parâmetros e clique em **Rodar simulação**.")
+    else:
+        sig_old, results = st.session_state["sim"]
+        if sig_old != sig:
+            st.warning("Os parâmetros mudaram desde a última simulação. Rode de novo para atualizar.")
+        main_key = stat if stat in results else next(iter(results))
+        r0 = results[main_key]
+        if r0["h"] < horizon:
+            st.warning(f"Dados curtos: o horizonte foi reduzido para {r0['h']} resultados.")
+        unit = "%" if kind_k == "%" else ""
+
+        def show_tab(t: pd.DataFrame, h: int) -> pd.DataFrame:
+            out = t.copy()
+            for col in ["MNPed (mediana)", "P25", "P75", "P95"]:
+                out[col] = out[col].map(lambda v: f"> {h}" if not np.isfinite(v) else f"{v:.0f}")
+            out["ANPed (média, detectados)"] = out["ANPed (média, detectados)"].round(1)
+            out["% detectado"] = out["% detectado"].round(1)
+            out["bias"] = out["bias"].map(lambda v: f"{v:+g}{unit}")
+            return out
+
+        st.subheader(f"{mm.STAT_LABELS[main_key]}: {cfg.N}-{cfg.step}")
+        st.caption(f"Falso alarme sem bias: {r0['fa']['% pontos em alarme']:.1f}% dos pontos, "
+                   f"{r0['fa']['episódios de alarme']} episódios"
+                   + (f" ({r0['fa']['episódios / dia']:.2f}/dia)" if has_time else "") + ".")
+        st.dataframe(show_tab(r0["tab"], r0["h"]), hide_index=True, width="stretch")
+
+        # Curva de detecção: MNPed por bias (com faixa P25–P75)
+        fig = go.Figure()
+        for i, (s_key, r) in enumerate(results.items()):
+            t = r["tab"].sort_values("bias")
+            cap = r["h"] * 1.05
+            y = t["MNPed (mediana)"].clip(upper=cap)
+            col = [C1, C2, C3, C4][list(mm.STAT_LABELS).index(s_key)]
+            fig.add_trace(go.Scatter(
+                x=t["bias"], y=y, mode="lines+markers", name=mm.STAT_LABELS[s_key], line=dict(color=col, width=2),
+                marker=dict(size=8),
+                error_y=dict(type="data", symmetric=False, array=(t["P75"].clip(upper=cap) - y),
+                             arrayminus=(y - t["P25"].clip(upper=cap)), thickness=1, width=4) if len(results) == 1 else None,
+                customdata=np.c_[t["% detectado"], t["MNPed (mediana)"].map(lambda v: f"> {r['h']}" if not np.isfinite(v) else f"{v:.0f}")],
+                hovertemplate="bias %{x:+g}" + unit + ": MNPed %{customdata[1]} · detectado %{customdata[0]:.0f}%",
+            ))
+        fig.add_hline(y=r0["h"], line_dash="dot", line_color=MUTED, annotation_text="horizonte (não detectado)")
+        fig.update_yaxes(type="log", title="MNPed: resultados até o alarme (escala log)",
+                         tickvals=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000])
+        fig.update_xaxes(title=f"bias injetado ({'%' if kind_k == '%' else 'unidade'})", zeroline=True, zerolinecolor="#cfcfcb")
+        st.plotly_chart(base_layout(fig, 440, title="Curva de detecção de erro (menor = mais rápido)", hovermode="closest"),
+                        width="stretch")
+
+        if len(results) > 1:
+            comp = []
+            for s_key, r in results.items():
+                row = {"estatística": mm.STAT_LABELS[s_key], "% pontos em alarme (sem bias)": round(r["fa"]["% pontos em alarme"], 2),
+                       "episódios sem bias": r["fa"]["episódios de alarme"]}
+                for _, t in r["tab"].iterrows():
+                    v = t["MNPed (mediana)"]
+                    row[f"MNPed {t['bias']:+g}{unit}"] = f"> {r['h']}" if not np.isfinite(v) else f"{v:.0f}"
+                comp.append(row)
+            st.markdown("**Comparação (MNPed por bias)**")
+            st.dataframe(pd.DataFrame(comp), hide_index=True, width="stretch")
+            st.caption("Na comparação, cada estatística usa limites alvo ± k·DP da própria série, para que todas partam "
+                       "de uma taxa de falso alarme comparável.")
+
+        # Visualizar uma injeção
+        with st.expander("Ver uma injeção de bias no gráfico"):
+            a, b = st.columns(2)
+            b_one = a.selectbox("Bias", biases, format_func=lambda v: f"{v:+g}{unit}")
+            pos_pct = b.slider("Início do erro (% da série)", 5, 95, 50)
+            p0 = int(len(xv) * pos_pct / 100)
+            v2 = xv.copy()
+            v2[p0:] = mm._biased(xv[p0:], b_one, kind_k)
+            ser_b, _ = mm.compute_series(data2, cfg, vals=v2)
+            x0 = data2["t"].iloc[p0] if (has_time and xaxis == "data/hora") else p0 + 1
+            nped = mm.simulate_one(ctx, cfg, lim, b_one, kind_k, p0, len(xv))
+            st.plotly_chart(series_figure(ser_b, lim, f"Bias {b_one:+g}{unit} a partir do resultado {p0 + 1}",
+                                          bias_start=x0), width="stretch")
+            st.caption(f"Primeiro alarme no sentido do erro após **{nped} resultados**." if nped else
+                       "Sem alarme no sentido do erro até o fim dos dados.")
+
+        # Exportação
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+            mm.config_table(cfg, lim, {
+                "arquivo": up.name, "aba": sheet, "coluna resultado": c_res,
+                "exclusão de outliers": f"{tr_label}, k={k_tukey}, iterativo={iterative}" if use_out else "não",
+                "falso alarme (% pontos)": round(fa["% pontos em alarme"], 3),
+                "episódios de alarme": fa["episódios de alarme"], "tipo de bias": kind,
+                "simulações por bias": n_sims, "horizonte": r0["h"], "semente": seed,
+            }).to_excel(xw, sheet_name="Configuração", index=False)
+            for s_key, r in results.items():
+                r["tab"].to_excel(xw, sheet_name=f"Bias {s_key}", index=False)
+            ser.drop(columns=["j"]).to_excel(xw, sheet_name="Série", index=False)
+        st.download_button("Baixar configuração e resultados (.xlsx)", buf.getvalue(),
+                           file_name=f"medida_movel_{stat}_{N}-{step}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

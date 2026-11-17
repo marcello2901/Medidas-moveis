@@ -1,0 +1,39 @@
+# Configurador de Medidas Móveis (PBRTQC)
+
+App Streamlit para configurar a medida móvel de pacientes a partir de uma planilha exportada.
+
+## Como rodar
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Fluxo
+
+**Barra lateral:** upload (xlsx/xls/csv) → aba → colunas por lista suspensa (resultado, data, hora, idade, sexo) → filtros de teste e equipamento.
+Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal são aceitos; textos como `<0,5` são descartados e contados no resumo.
+
+**1 · Preparo dos dados**
+- Estatística descritiva e histogramas.
+- Outliers: transformação (Box-Cox, log ou nenhuma) + cercas de Tukey (k configurável, opção iterativa). As cercas viram a sugestão de truncamento.
+- Exclusão dos outliers é **opcional** (chave "Excluir outliers…"). Desligada, as etapas 2 e 3 usam todos os dados.
+- Média/mediana por idade (painel de cima) × nº de resultados por idade (painel de baixo), opcionalmente por sexo. Perfil por hora do dia.
+
+**2 · Configuração**
+- Truncamento (excluir ou winsorizar), sexo, faixa de idade.
+- Estatística: média móvel, mediana móvel, média móvel ponderada (pesos lineares, o mais recente pesa N) e EWMA (λ padrão = 2/(N+1)).
+- Bloco **N-n**: bloco de N resultados elegíveis, novo ponto a cada n resultados.
+- Limites alvo ± k·DP (alvo/DP da própria série ou manuais, como no Lab Operations); regra de pontos consecutivos.
+- Gráfico com alarmes, taxa de falso alarme (% pontos, episódios, episódios/dia).
+
+**3 · Simulação de bias**
+- Bias (% ou unidade) injetado em posições aleatórias do fluxo real e mantido até o fim do horizonte. Entra antes do truncamento.
+- NPed = nº de resultados de pacientes liberados entre o início do erro e o primeiro alarme no sentido do erro.
+- Tabela por bias: % detectado, ANPed (média dos detectados), MNPed (mediana), P25/P75/P95. Não detectado = "> horizonte".
+- Curva de detecção (MNPed × bias, escala log); comparação opcional das 4 estatísticas com os mesmos pontos de início.
+- Visualização de uma injeção específica e exportação (.xlsx) da configuração e dos resultados.
+
+## Arquivos
+- `app.py`: interface
+- `mm_core.py`: cálculos (sem dependência do Streamlit, reutilizável em scripts)
