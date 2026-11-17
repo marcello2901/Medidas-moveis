@@ -267,19 +267,9 @@ with tab2:
     st.caption(f"Configuração **{N}-{step}**: bloco de {N} resultados elegíveis, novo ponto a cada {step}."
                + (" O EWMA usa os N primeiros só para iniciar a série." if stat == "EWMA" else ""))
 
-    st.subheader("Limites de controle")
-    a, b, c, d_ = st.columns(4)
-    k_lim = a.number_input("k (limites = alvo ± k·DP)", 0.5, 6.0, 2.0, 0.5)
-    tgt_manual = b.checkbox("Alvo manual")
-    tgt = b.number_input("Alvo", value=float(round(np.mean(xv), 4)), format="%.4f", disabled=not tgt_manual)
-    sd_manual = c.checkbox("DP manual")
-    sdv = c.number_input("DP da medida móvel", value=0.0, min_value=0.0, format="%.4f", disabled=not sd_manual)
-    consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
-
+    # A série não depende do alvo/DP/k: calcula antes para oferecer a média dos blocos como alvo
     cfg = mm.MMConfig(stat=stat, N=N, step=step, lam=lam, trunc_lo=t_lo, trunc_hi=t_hi, trunc_mode=t_mode,
-                      sexes=sexes, age_min=age_min, age_max=age_max, k=k_lim,
-                      target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None, consec=consec)
-
+                      sexes=sexes, age_min=age_min, age_max=age_max)
     pop = mm.population_mask(data2, cfg)
     elig, _ = mm.apply_truncation(xv, pop, cfg)
     n_trunc = int((pop & ((xv < t_lo) | (xv > t_hi))).sum())
@@ -287,6 +277,36 @@ with tab2:
     if len(ser) < 5:
         st.error(f"Só {int(elig.sum())} resultados elegíveis: insuficiente para bloco de {N}.")
         st.stop()
+    blocks_mean = float(ser["valor"].mean())
+    blocks_sd = float(ser["valor"].std(ddof=1))
+
+    st.subheader("Limites de controle")
+    a, b, c, d_ = st.columns(4)
+    k_lim = a.number_input("k (limites = alvo ± k·DP)", 0.5, 6.0, 2.0, 0.5)
+    tgt_mode = b.radio("Média-alvo", ["Média dos blocos plotados", "Manual"],
+                       help="Média dos blocos plotados = média de todos os pontos da medida móvel no gráfico "
+                            "(média das médias móveis; na mediana móvel, média das medianas).")
+    if "alvo_manual" not in st.session_state:
+        st.session_state["alvo_manual"] = round(blocks_mean, 4)
+    tgt_manual = tgt_mode == "Manual"
+    if tgt_manual:
+        tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
+    else:
+        tgt = blocks_mean
+        b.caption(f"Alvo = {fmt(blocks_mean, 4)} ({len(ser)} blocos)")
+    sd_mode = c.radio("DP", ["DP dos blocos plotados", "Manual"])
+    if "dp_manual" not in st.session_state:
+        st.session_state["dp_manual"] = round(blocks_sd, 4)
+    sd_manual = sd_mode == "Manual"
+    if sd_manual:
+        sdv = c.number_input("DP manual", min_value=0.0, format="%.4f", key="dp_manual")
+    else:
+        sdv = blocks_sd
+        c.caption(f"DP = {fmt(blocks_sd, 4)}")
+    consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
+
+    cfg = replace(cfg, k=k_lim, consec=consec,
+                  target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None)
     lim = mm.control_limits(ser, cfg)
     fa = mm.false_alarm_summary(ser, lim, cfg, ctx.n_stream)
 
@@ -294,13 +314,13 @@ with tab2:
     cols_m[0].metric("Resultados elegíveis", f"{int(elig.sum())} / {len(xv)}")
     cols_m[1].metric("Fora do truncamento", f"{n_trunc} ({100 * n_trunc / max(pop.sum(), 1):.1f}%)")
     cols_m[2].metric("Alvo", fmt(lim["alvo"]))
-    cols_m[3].metric("DP da série", fmt(lim["DP"], 4))
+    cols_m[3].metric("DP", fmt(lim["DP"], 4))
     cols_m[4].metric("Pontos em alarme", f"{fa['% pontos em alarme']:.1f}%")
     cols_m[5].metric("Episódios de alarme / dia" if has_time else "Episódios / 1000 res.",
                      fmt(fa["episódios / dia"] if has_time else fa["episódios / 1000 resultados"], 2))
     if not (tgt_manual or sd_manual):
-        st.caption("Alvo e DP calculados da própria série (dentro da amostra): com k=2 cerca de 5% dos pontos ficam "
-                   "fora por construção. Para avaliar limites já em uso no Lab Operations, informe alvo e DP manuais.")
+        st.caption("Alvo e DP calculados dos próprios blocos plotados (dentro da amostra): com k=2 cerca de 5% dos "
+                   "pontos ficam fora por construção. Para avaliar limites já em uso no Lab Operations, use valores manuais.")
 
     a, b, c = st.columns([1, 1, 2])
     xaxis = a.radio("Eixo X", ["data/hora", "sequência"], horizontal=True, disabled=not has_time)
@@ -492,6 +512,7 @@ with tab3:
         with pd.ExcelWriter(buf, engine="openpyxl") as xw:
             mm.config_table(cfg, lim, {
                 "arquivo": up.name, "aba": sheet, "coluna resultado": c_res,
+                "origem do alvo": tgt_mode, "origem do DP": sd_mode,
                 "exclusão de outliers": f"{tr_label}, k={k_tukey}, iterativo={iterative}" if use_out else "não",
                 "falso alarme (% pontos)": round(fa["% pontos em alarme"], 3),
                 "episódios de alarme": fa["episódios de alarme"], "tipo de bias": kind,
