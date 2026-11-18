@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,7 +20,31 @@ from plotly.subplots import make_subplots
 import mm_core as mm
 import report
 
-st.set_page_config(page_title="PBRTQC Planner", layout="wide")
+ASSETS = Path(__file__).parent / "assets"
+FAVICON = ASSETS / "pbrtqc_favicon.png"
+SYMBOL_SVG = ASSETS / "pbrtqc_symbol.svg"
+
+st.set_page_config(page_title="PBRTQC Planner", page_icon=str(FAVICON) if FAVICON.exists() else None, layout="wide")
+if SYMBOL_SVG.exists():
+    st.logo(str(SYMBOL_SVG), size="large")
+
+
+def app_header() -> None:
+    """Logotipo (símbolo + nome + subtítulo) no topo da página."""
+    svg = SYMBOL_SVG.read_text(encoding="utf-8") if SYMBOL_SVG.exists() else ""
+    svg = svg.replace('width="64" height="64"', 'width="56" height="56"', 1)
+    st.html(
+        '<div style="display:flex;align-items:center;gap:16px;margin:4px 0 8px">'
+        f'{svg}'
+        '<div style="display:flex;flex-direction:column;gap:4px">'
+        '<div style="font-size:2.1rem;line-height:1;letter-spacing:-0.01em">'
+        '<span style="font-weight:700;color:#1f2a44">PBRTQC</span> '
+        '<span style="font-weight:500;color:#2a78d6">Planner</span></div>'
+        '<div style="font-size:0.9rem;color:#5b6170">Planejamento e simulação da medida móvel de pacientes '
+        '(patient-based real-time quality control)</div>'
+        '</div></div>'
+    )
+
 
 # Paleta (categórica em ordem fixa + cores de papel)
 C1, C2, C3, C4 = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
@@ -72,7 +97,8 @@ def cached_sheets(b: bytes, name: str):
 # Termos de uso e proteção de dados (aceite obrigatório antes do upload)
 # =============================================================================
 if not st.session_state.get("termos_aceitos", False):
-    st.title("Termos de uso e proteção de dados")
+    app_header()
+    st.subheader("Termos de uso e proteção de dados")
     st.markdown(
         "Esta ferramenta processa planilhas de resultados laboratoriais para planejar e simular a medida móvel de "
         "pacientes. Os arquivos enviados podem conter **dados pessoais sensíveis** (como nome completo, data de "
@@ -99,8 +125,7 @@ if not st.session_state.get("termos_aceitos", False):
 st.sidebar.title("Dados de entrada")
 up = st.sidebar.file_uploader("Planilha (xlsx, xls ou csv)", type=["xlsx", "xlsm", "xls", "csv", "txt"])
 
-st.title("PBRTQC Planner")
-st.caption("Planejamento e simulação da medida móvel de pacientes (patient-based real-time quality control)")
+app_header()
 if up is None:
     st.info("Envie a planilha na barra lateral. Ela precisa ter, no mínimo, uma coluna de **resultado** e "
             "uma de **data/hora** (a ordem cronológica é essencial para simular a medida móvel). "
