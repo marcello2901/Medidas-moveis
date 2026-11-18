@@ -186,19 +186,10 @@ def describe_full(x: np.ndarray) -> pd.DataFrame:
         return pd.DataFrame(columns=["grupo", "medida", "valor"])
     mean, sd = x.mean(), x.std(ddof=1) if n > 1 else np.nan
     se = sd / np.sqrt(n) if n > 1 else np.nan
-    tcrit = stats.t.ppf(0.975, n - 1) if n > 1 else np.nan
     add("Tamanho", "n", n)
     add("Tamanho", "valores distintos", len(np.unique(x)))
     add("Tendência central", "média", mean)
-    add("Tendência central", "IC95% média — inferior", mean - tcrit * se)
-    add("Tendência central", "IC95% média — superior", mean + tcrit * se)
     add("Tendência central", "mediana", np.median(x))
-    if n >= 10:  # IC95% da mediana por ordem binomial (não paramétrico)
-        lo_k = int(max(stats.binom.ppf(0.025, n, 0.5) - 1, 0))
-        hi_k = int(min(stats.binom.ppf(0.975, n, 0.5), n - 1))
-        xs = np.sort(x)
-        add("Tendência central", "IC95% mediana — inferior", xs[lo_k])
-        add("Tendência central", "IC95% mediana — superior", xs[hi_k])
     vals, counts = np.unique(x, return_counts=True)
     add("Tendência central", "moda (valor mais frequente)", vals[np.argmax(counts)])
     add("Tendência central", "média geométrica", stats.gmean(x) if x.min() > 0 else np.nan)
@@ -214,27 +205,10 @@ def describe_full(x: np.ndarray) -> pd.DataFrame:
     add("Dispersão", "amplitude", x.max() - x.min())
     q1, q3 = np.percentile(x, [25, 75])
     add("Dispersão", "IQR (Q3 − Q1)", q3 - q1)
-    mad = stats.median_abs_deviation(x, scale="normal")
-    add("Dispersão", "MAD normalizado (≈DP robusto)", mad)
-    add("Dispersão", "CV robusto% (MAD/mediana)", 100 * mad / np.median(x) if np.median(x) else np.nan)
     for p_ in PCTS:
         add("Percentis", f"P{p_:g}".replace(".", ","), np.percentile(x, p_))
     add("Forma", "assimetria", stats.skew(x, bias=False) if n > 2 else np.nan)
     add("Forma", "curtose (excesso)", stats.kurtosis(x, bias=False) if n > 3 else np.nan)
-    if n >= 8:
-        add("Normalidade", "D'Agostino-Pearson K² — p", stats.normaltest(x).pvalue)
-    if 3 <= n <= 5000:
-        add("Normalidade", "Shapiro-Wilk — p", stats.shapiro(x).pvalue)
-    if n >= 8:
-        try:  # SciPy >= 1.17: p-valor interpolado
-            ad = stats.anderson(x, dist="norm", method="interpolate")
-            add("Normalidade", "Anderson-Darling A²", ad.statistic)
-            add("Normalidade", "Anderson-Darling — p", ad.pvalue)
-        except TypeError:
-            ad = stats.anderson(x, dist="norm")
-            add("Normalidade", "Anderson-Darling A²", ad.statistic)
-            add("Normalidade", "Anderson-Darling — valor crítico 5%",
-                ad.critical_values[list(ad.significance_level).index(5.0)])
     return pd.DataFrame(rows, columns=["grupo", "medida", "valor"])
 
 

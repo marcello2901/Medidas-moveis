@@ -167,8 +167,6 @@ def fmt_stat(medida: str, v: float) -> str:
         return "—"
     if medida in INT_MEASURES:
         return fmt(v, 0)
-    if medida.endswith("— p"):
-        return "< 0,001" if v < 0.001 else fmt(v, 3)
     return fmt(v, 4) if abs(v) < 1000 else fmt(v, 2)
 
 
@@ -258,20 +256,6 @@ with tab0:
     else:
         st.info("Informe sexo, idade, equipamento ou data/hora para ver os resumos por grupo.")
 
-    if has_time:
-        st.subheader("Ao longo do tempo")
-        daily = data.groupby(data["t"].dt.normalize())["val"].agg(n="size", media="mean", mediana="median").reset_index()
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.6, 0.4], vertical_spacing=0.08,
-                            subplot_titles=("Média e mediana diárias", "Nº de resultados por dia"))
-        fig.add_trace(go.Scatter(x=daily["t"], y=daily["media"], mode="lines+markers", name="média",
-                                 line=dict(color=C1, width=2), marker=dict(size=5),
-                                 customdata=daily["n"], hovertemplate="%{x|%d/%m/%Y}: média %{y:.3f} (n=%{customdata})<extra></extra>"), 1, 1)
-        fig.add_trace(go.Scatter(x=daily["t"], y=daily["mediana"], mode="lines", name="mediana",
-                                 line=dict(color=C2, width=2), hovertemplate="%{x|%d/%m/%Y}: mediana %{y:.3f}<extra></extra>"), 1, 1)
-        fig.add_trace(go.Bar(x=daily["t"], y=daily["n"], marker_color=MUTED, name="n", showlegend=False,
-                             hovertemplate="%{x|%d/%m/%Y}: %{y} resultados<extra></extra>"), 2, 1)
-        st.plotly_chart(base_layout(fig, 460, hovermode="closest"), width="stretch")
-
     buf_d = io.BytesIO()
     with pd.ExcelWriter(buf_d, engine="openpyxl") as xw:
         dfull.to_excel(xw, sheet_name="Descritiva", index=False)
@@ -285,10 +269,6 @@ with tab0:
 # =============================================================================
 with tab1:
     x = data["val"].to_numpy()
-    desc = mm.describe(x)
-    cols_m = st.columns(6)
-    for c, k in zip(cols_m, ["n", "média", "DP", "mediana", "CV%", "assimetria"]):
-        c.metric(k, fmt(desc[k], 0 if k == "n" else 3))
 
     st.subheader("Outliers: transformação + Tukey")
     a, b, c, d_ = st.columns([1.4, 1, 1, 1.4])

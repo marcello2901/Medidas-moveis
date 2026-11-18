@@ -15,8 +15,8 @@ streamlit run app.py
 Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal são aceitos; textos como `<0,5` são descartados e contados no resumo.
 
 **1 · Estatística descritiva**
-- Tamanho, tendência central (média e IC95%, mediana e IC95%, moda, média geométrica, média aparada), dispersão (DP, CV, IQR, MAD, mín/máx e acúmulo nos extremos), percentis (P1 a P99), forma (assimetria, curtose) e normalidade (D'Agostino-Pearson, Shapiro-Wilk até n=5000, Anderson-Darling).
-- Histograma com boxplot, Q-Q normal, resumos por sexo, equipamento, faixa etária, dia da semana e turno, média/mediana e volume diários. Exporta em .xlsx.
+- Tamanho, tendência central (média, mediana, moda, média geométrica, média aparada), dispersão (DP, variância, CV, erro-padrão, IQR, mín/máx e acúmulo nos extremos), percentis (P1 a P99) e forma (assimetria, curtose).
+- Histograma com boxplot, Q-Q normal, resumos por sexo, equipamento, faixa etária, dia da semana e turno. Exporta em .xlsx.
 
 **2 · Preparo dos dados**
 - Estatística descritiva e histogramas.
