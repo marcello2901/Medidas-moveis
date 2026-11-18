@@ -69,6 +69,31 @@ def cached_sheets(b: bytes, name: str):
 
 
 # =============================================================================
+# Termos de uso e proteção de dados (aceite obrigatório antes do upload)
+# =============================================================================
+if not st.session_state.get("termos_aceitos", False):
+    st.title("Termos de uso e proteção de dados")
+    st.markdown(
+        "Esta ferramenta processa planilhas de resultados laboratoriais para planejar e simular a medida móvel de "
+        "pacientes. Os arquivos enviados podem conter **dados pessoais sensíveis** (como nome completo, data de "
+        "nascimento, números de documentos de identificação e informações de saúde), cujo tratamento é regulado por "
+        "leis de proteção de dados como a **Lei Geral de Proteção de Dados (LGPD – Lei nº 13.709/2018)** e o "
+        "**Regulamento Geral sobre a Proteção de Dados (GDPR)**.\n\n"
+        "É de sua **exclusiva responsabilidade** garantir que todos os dados utilizados nesta ferramenta estejam em "
+        "conformidade com a legislação de proteção de dados aplicável. Recomendamos fortemente que você utilize "
+        "**apenas dados previamente anonimizados**, para proteger a privacidade dos titulares. A ferramenta precisa "
+        "somente de resultado, data/hora, idade, sexo e equipamento: remova nomes, documentos, códigos de amostra ou "
+        "de atendimento e qualquer outro identificador antes do envio.\n\n"
+        "A responsabilidade pela natureza dos dados tratados é exclusivamente sua.\n\n"
+        "Para prosseguir, você deve confirmar que os dados a serem utilizados foram devidamente tratados e anonimizados."
+    )
+    aceite = st.checkbox("Ao marcar esta caixa, confirmo que os dados fornecidos estão anonimizados.")
+    if st.button("Continuar", type="primary", disabled=not aceite):
+        st.session_state["termos_aceitos"] = True
+        st.rerun()
+    st.stop()
+
+# =============================================================================
 # Barra lateral — upload e mapeamento de colunas
 # =============================================================================
 st.sidebar.title("Dados de entrada")
@@ -175,15 +200,15 @@ with tab0:
     xd = data["val"].to_numpy()
     st.caption("Todos os resultados numéricos do teste/equipamento(s) selecionados na barra lateral, antes de "
                "qualquer exclusão de outliers, truncamento ou filtro de sexo/idade.")
-    top = st.columns(5)
+    top = st.columns(6)
     top[0].metric("Resultados válidos", fmt(len(xd), 0))
     top[1].metric("Linhas descartadas", fmt(rep["linhas_lidas"] - rep["linhas_validas"], 0),
                   help="Sem resultado numérico" + (" ou sem data/hora" if has_time else ""))
-    if has_time:
-        days = (data["t"].max() - data["t"].min()) / pd.Timedelta(days=1)
-        top[2].metric("Período", f"{data['t'].min():%d/%m/%y} a {data['t'].max():%d/%m/%y}")
-        top[3].metric("Dias com resultado", fmt(data["t"].dt.normalize().nunique(), 0))
-        top[4].metric("Resultados / dia (média)", fmt(len(xd) / max(data["t"].dt.normalize().nunique(), 1), 1))
+    if has_time:  # período em dois cartões (um só cartão truncava o texto)
+        top[2].metric("Início do período", f"{data['t'].min():%d/%m/%y}", help=f"{data['t'].min():%d/%m/%Y %H:%M}")
+        top[3].metric("Fim do período", f"{data['t'].max():%d/%m/%y}", help=f"{data['t'].max():%d/%m/%Y %H:%M}")
+        top[4].metric("Dias com resultado", fmt(data["t"].dt.normalize().nunique(), 0))
+        top[5].metric("Resultados / dia (média)", fmt(len(xd) / max(data["t"].dt.normalize().nunique(), 1), 1))
 
     dfull = mm.describe_full(xd)
     left, right = st.columns([1, 1.4])
@@ -193,10 +218,6 @@ with tab0:
         st.dataframe(show, hide_index=True, width="stretch", height=640)
         sk = dfull.set_index("medida")["valor"]
         msgs = []
-        if "assimetria" in sk and abs(sk["assimetria"]) > 1:
-            msgs.append(f"assimetria {fmt(sk['assimetria'], 2)}: distribuição bem assimétrica, a média fica "
-                        f"{'acima' if sk['assimetria'] > 0 else 'abaixo'} da mediana e é sensível à cauda; "
-                        "a mediana móvel ou um truncamento mais apertado tendem a ser mais estáveis")
         if sk.get("n no valor mínimo", 0) > 0.01 * len(xd):
             msgs.append(f"{fmt(sk['n no valor mínimo'], 0)} resultados ({100 * sk['n no valor mínimo'] / len(xd):.1f}%) "
                         "empilhados no valor mínimo: provável limite de quantificação/medição (resultados censurados)")

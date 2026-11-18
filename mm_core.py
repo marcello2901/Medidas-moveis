@@ -207,8 +207,6 @@ def describe_full(x: np.ndarray) -> pd.DataFrame:
     add("Dispersão", "IQR (Q3 − Q1)", q3 - q1)
     for p_ in PCTS:
         add("Percentis", f"P{p_:g}".replace(".", ","), np.percentile(x, p_))
-    add("Forma", "assimetria", stats.skew(x, bias=False) if n > 2 else np.nan)
-    add("Forma", "curtose (excesso)", stats.kurtosis(x, bias=False) if n > 3 else np.nan)
     return pd.DataFrame(rows, columns=["grupo", "medida", "valor"])
 
 
