@@ -728,20 +728,29 @@ with tab2:
                         width="stretch")
 
     if has_time:
-        with st.expander("Volume diário dentro do truncamento", expanded=bool(strata)):
-            fig = go.Figure()
-            for r_ in [geral] + strata:
-                if r_["vol"] is None:
-                    continue
-                fig.add_trace(go.Box(y=r_["vol"]["daily"].values, name=r_["label"].replace(" (todos os estratos juntos)", ""),
-                                     marker_color=r_["color"] or MUTED, boxpoints=False,
-                                     hovertemplate="%{y} resultados/dia<extra></extra>"))
-            fig.add_hline(y=N, line_dash="dot", line_color=ALARM, annotation_text=f"N = {N}")
-            fig.update_yaxes(title="resultados elegíveis por dia")
-            st.plotly_chart(base_layout(fig, 360, title="Resultados elegíveis por dia (cada caixa = distribuição dos dias)",
-                                        showlegend=False, hovermode="closest"), width="stretch")
-            st.caption("Quando a caixa fica abaixo da linha N, um bloco não se completa num dia típico: a medida "
-                       "móvel daquele estrato reage a um erro só no dia seguinte ou depois.")
+        st.markdown("**Volume diário dentro do truncamento**")
+        vrows = []
+        for r_ in [geral] + strata:
+            v_ = r_["vol"]
+            if v_ is None:
+                continue
+            dly = v_["daily"]
+            vrows.append({
+                "estrato": r_["label"] if strata else "Geral",
+                "dias com resultado": len(dly),
+                "elegíveis": r_["n_elig"],
+                "média/dia": round(v_["mean"], 1),
+                "mediana/dia": v_["med"],
+                "P10/dia": v_["p10"],
+                "mín./dia": int(dly.min()) if len(dly) else np.nan,
+                "máx./dia": v_["max"],
+                f"dias com menos de {N} (%)": round(100 * (dly < N).mean(), 1) if len(dly) else np.nan,
+                f"bloco de {N} se renova em (h)": round(v_["hours"]) if np.isfinite(v_["hours"]) else np.nan,
+            })
+        st.dataframe(pd.DataFrame(vrows), hide_index=True, width="stretch")
+        st.caption(f"Resultados dentro do truncamento e do filtro de população, por dia com resultado. Nos dias com "
+                   f"menos de {N} elegíveis, um bloco não se completa no próprio dia: a medida móvel reage a um erro "
+                   "só no dia seguinte ou depois.")
 
     with st.expander("Comparar as quatro estatísticas com a mesma configuração (falsos alarmes)"):
         rows = []
