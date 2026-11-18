@@ -1,5 +1,5 @@
 """
-Núcleo de cálculo do configurador de medidas móveis (PBRTQC).
+Núcleo de cálculo do PBRTQC Planner.
 
 Separado da interface para poder ser testado e reutilizado em scripts.
 """

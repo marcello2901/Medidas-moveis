@@ -1,4 +1,4 @@
-# Configurador de Medidas Móveis (PBRTQC)
+# PBRTQC Planner
 
 App Streamlit para configurar a medida móvel de pacientes a partir de uma planilha exportada.
 

@@ -1,5 +1,5 @@
 """
-Configurador de Medidas Móveis (PBRTQC)
+PBRTQC Planner: planejamento e simulação da medida móvel de pacientes
 Etapa 1: estatística descritiva · Etapa 2: preparo dos dados · Etapa 3: configuração · Etapa 4: simulação de bias
 
 Executar:  streamlit run app.py
@@ -19,7 +19,7 @@ from plotly.subplots import make_subplots
 import mm_core as mm
 import report
 
-st.set_page_config(page_title="Configurador de Medidas Móveis", layout="wide")
+st.set_page_config(page_title="PBRTQC Planner", layout="wide")
 
 # Paleta (categórica em ordem fixa + cores de papel)
 C1, C2, C3, C4 = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
@@ -74,7 +74,8 @@ def cached_sheets(b: bytes, name: str):
 st.sidebar.title("Dados de entrada")
 up = st.sidebar.file_uploader("Planilha (xlsx, xls ou csv)", type=["xlsx", "xlsm", "xls", "csv", "txt"])
 
-st.title("Configurador de Medidas Móveis")
+st.title("PBRTQC Planner")
+st.caption("Planejamento e simulação da medida móvel de pacientes (patient-based real-time quality control)")
 if up is None:
     st.info("Envie a planilha na barra lateral. Ela precisa ter, no mínimo, uma coluna de **resultado** e "
             "uma de **data/hora** (a ordem cronológica é essencial para simular a medida móvel). "

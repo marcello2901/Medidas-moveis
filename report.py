@@ -243,7 +243,7 @@ def build_pdf(info: dict) -> bytes:
         canv.setFont("Helvetica", 7.5)
         canv.setFillColor(MUTED)
         canv.drawString(MARGIN, 0.95 * cm,
-                        f"Emitido em {emitted:%d/%m/%Y %H:%M} · {info.get('rodape', 'Configurador de Medidas Móveis')}")
+                        f"Emitido em {emitted:%d/%m/%Y %H:%M} · {info.get('rodape', 'PBRTQC Planner')}")
         canv.drawRightString(PAGE_W - MARGIN, 0.95 * cm, f"Página {doc.page}")
         canv.restoreState()
 
