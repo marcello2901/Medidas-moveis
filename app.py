@@ -6,9 +6,9 @@ Executar:  streamlit run app.py
 """
 from __future__ import annotations
 
+import base64
 import io
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -20,19 +20,66 @@ from plotly.subplots import make_subplots
 import mm_core as mm
 import report
 
-ASSETS = Path(__file__).parent / "assets"
-FAVICON = ASSETS / "pbrtqc_favicon.png"
-SYMBOL_SVG = ASSETS / "pbrtqc_symbol.svg"
+# Identidade visual embutida no código (não depende da pasta assets/ existir no servidor)
+SYMBOL_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="PBRTQC Planner">
+  <rect width="64" height="64" rx="15" fill="#1f2a44"/>
+  <line x1="10" y1="18" x2="54" y2="18" stroke="#8fa3c7" stroke-width="1.6" stroke-dasharray="2.5 2.5" stroke-linecap="round"/>
+  <line x1="10" y1="46" x2="54" y2="46" stroke="#8fa3c7" stroke-width="1.6" stroke-dasharray="2.5 2.5" stroke-linecap="round"/>
+  <circle cx="14" cy="27" r="1.4" fill="#8fa3c7"/>
+  <circle cx="19" cy="40" r="1.4" fill="#8fa3c7"/>
+  <circle cx="24" cy="24" r="1.4" fill="#8fa3c7"/>
+  <circle cx="31" cy="41" r="1.4" fill="#8fa3c7"/>
+  <circle cx="36" cy="27" r="1.4" fill="#8fa3c7"/>
+  <circle cx="43" cy="38" r="1.4" fill="#8fa3c7"/>
+  <circle cx="48" cy="22" r="1.4" fill="#8fa3c7"/>
+  <path d="M10 35 C 17 35, 19 27, 25 28 S 33 38, 39 33 S 47 24, 53 26" fill="none" stroke="#4c9bf0" stroke-width="3.6" stroke-linecap="round"/>
+  <circle cx="53" cy="26" r="3.6" fill="#ffffff"/>
+</svg>"""
+FAVICON_PNG_B64 = (
+    "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"
+)
 
-st.set_page_config(page_title="PBRTQC Planner", page_icon=str(FAVICON) if FAVICON.exists() else None, layout="wide")
-if SYMBOL_SVG.exists():
-    st.logo(str(SYMBOL_SVG), size="large")
+
+def _favicon():
+    from PIL import Image
+    return Image.open(io.BytesIO(base64.b64decode(FAVICON_PNG_B64)))
+
+
+st.set_page_config(page_title="PBRTQC Planner", page_icon=_favicon(), layout="wide")
+st.logo(SYMBOL_SVG, size="large")
 
 
 def app_header() -> None:
     """Logotipo (símbolo + nome + subtítulo) no topo da página."""
-    svg = SYMBOL_SVG.read_text(encoding="utf-8") if SYMBOL_SVG.exists() else ""
-    svg = svg.replace('width="64" height="64"', 'width="56" height="56"', 1)
+    # <img> com data URI: sobrevive à sanitização de HTML do Streamlit em qualquer versão
+    svg_b64 = base64.b64encode(SYMBOL_SVG.encode("utf-8")).decode()
+    svg = (f'<img src="data:image/svg+xml;base64,{svg_b64}" width="56" height="56" '
+           'alt="Símbolo do PBRTQC Planner" style="display:block;flex:none">')
     st.html(
         '<div style="display:flex;align-items:center;gap:16px;margin:4px 0 8px">'
         f'{svg}'
