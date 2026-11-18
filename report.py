@@ -107,38 +107,56 @@ def age_chart(age: dict) -> Image:
     return _fig_to_image(fig, CONTENT_W / cm)
 
 
-def series_chart(serie: dict) -> Image:
-    """serie = {itens: [{nome, x, y, lim{alvo,LI,LS}, alarme(bool array)}], x_is_time, ylabel}"""
-    fig, ax = plt.subplots(figsize=(7.2, 3.0))
-    multi = len(serie["itens"]) > 1
-    for i, it in enumerate(serie["itens"]):
-        col = CAT[i % len(CAT)] if multi else CAT[0]
-        x = pd.to_datetime(it["x"]) if serie["x_is_time"] else np.asarray(it["x"])
+def _plot_items(ax, itens, x_is_time, annotate):
+    multi = len(itens) > 1 or annotate is False
+    for i, it in enumerate(itens):
+        col = it.get("cor") or (CAT[i % len(CAT)] if multi else CAT[0])
+        x = pd.to_datetime(it["x"]) if x_is_time else np.asarray(it["x"])
         y = np.asarray(it["y"], float)
-        ax.plot(x, y, color=col, lw=1.0, label=it["nome"])
+        ax.plot(x, y, color=col, lw=0.9, label=it["nome"])
         al = np.asarray(it["alarme"], bool)
         if al.any():
-            ax.scatter(np.asarray(x)[al], y[al], s=11, color=col if multi else "#e34948", zorder=3,
+            ax.scatter(np.asarray(x)[al], y[al], s=10, color=col if multi else "#e34948", zorder=3,
                        edgecolors="white", linewidths=0.5)
         lim = it["lim"]
         lim_col = col if multi else "#e34948"
         x0, x1 = (x.min(), x.max())
         for key, ls, c_ in (("LS", "--", lim_col), ("LI", "--", lim_col), ("alvo", ":", col if multi else "#3d3d3a")):
-            ax.hlines(lim[key], x0, x1, colors=c_, linestyles=ls, lw=0.9)
-        if not multi:
+            ax.hlines(lim[key], x0, x1, colors=c_, linestyles=ls, lw=0.8)
+        if annotate and not multi:
             for key in ("LS", "alvo", "LI"):
-                ax.annotate(f"{key} {lim[key]:.4g}".replace(".", ","), xy=(1.0, lim[key]), xycoords=("axes fraction", "data"),
-                            xytext=(3, 0), textcoords="offset points", va="center", fontsize=7, color="#55554f")
-    if serie["x_is_time"]:
+                ax.annotate(f"{key} {lim[key]:.4g}".replace(".", ","), xy=(1.0, lim[key]),
+                            xycoords=("axes fraction", "data"), xytext=(3, 0), textcoords="offset points",
+                            va="center", fontsize=7, color="#55554f")
+    if x_is_time:
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
-        ax.set_xlabel("data do último resultado do bloco", fontsize=8)
-    else:
-        ax.set_xlabel("nº do resultado", fontsize=8)
-    ax.set_ylabel(serie.get("ylabel", "medida móvel"), fontsize=8)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=6))
     _mpl_style(ax)
-    if multi:
-        ax.legend(fontsize=7, frameon=False, ncol=min(len(serie["itens"]), 4), loc="upper left",
-                  bbox_to_anchor=(0, 1.14))
+
+
+def series_chart(serie: dict) -> Image:
+    """serie = {itens: [...]} ou {paineis: [{titulo, itens}]}; item = {nome, cor?, x, y, lim{alvo,LI,LS}, alarme}"""
+    paineis = serie.get("paineis")
+    xlabel = "data do último resultado do bloco" if serie["x_is_time"] else "nº do resultado"
+    if paineis:
+        fig, axes = plt.subplots(1, len(paineis), figsize=(7.2, 3.2), sharey=True)
+        axes = np.atleast_1d(axes)
+        for ax, pn in zip(axes, paineis):
+            _plot_items(ax, pn["itens"], serie["x_is_time"], annotate=False)
+            ax.set_title(pn["titulo"], fontsize=8.5, color="#3d3d3a")
+            ax.set_xlabel(xlabel, fontsize=7.5)
+        axes[0].set_ylabel(serie.get("ylabel", "medida móvel"), fontsize=8)
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, fontsize=7, frameon=False, ncol=min(len(labels), 4), loc="upper left",
+                   bbox_to_anchor=(0.06, 1.06))
+    else:
+        fig, ax = plt.subplots(figsize=(7.2, 2.8))
+        itens = serie["itens"]
+        _plot_items(ax, itens, serie["x_is_time"], annotate=True)
+        ax.set_xlabel(xlabel, fontsize=8)
+        ax.set_ylabel(serie.get("ylabel", "medida móvel"), fontsize=8)
+        if len(itens) > 1:
+            ax.legend(fontsize=7, frameon=False, ncol=min(len(itens), 4), loc="upper left", bbox_to_anchor=(0, 1.14))
     fig.tight_layout()
     return _fig_to_image(fig, CONTENT_W / cm)
 
@@ -183,19 +201,20 @@ def data_table(header: list[str], rows: list[list], widths: list[float], bold_fi
 
 
 def signature_block(roles: list[str], names: dict[str, str]) -> Table:
+    col_w = CONTENT_W / 3  # largura fixa: um campo só não ocupa a página inteira
     cells = []
     for r in roles:
         nm = names.get(r) or ""
         cells.append(Table([
             [_p(r.upper(), "label")],
-            [Spacer(1, 22)],
+            [Spacer(1, 16)],
             [_p(nm or "&nbsp;", "cell")],
             [_p("Assinatura / data", "label")],
-        ], colWidths=[CONTENT_W / len(roles) - 12], style=[
+        ], colWidths=[col_w - 12], style=[
             ("LINEABOVE", (0, 2), (0, 2), 0.6, INK),
             ("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1),
         ]))
-    t = Table([cells], colWidths=[CONTENT_W / len(roles)] * len(roles))
+    t = Table([cells], colWidths=[col_w] * len(roles), hAlign="LEFT")
     t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     return t
 
@@ -282,9 +301,9 @@ def build_pdf(info: dict) -> bytes:
     el.append(KeepTogether(block))
     if info.get("limites_equip") is not None:
         df = info["limites_equip"]
-        el.append(KeepTogether([Spacer(1, 8), Paragraph("Valores por equipamento", ST["cellb"]), Spacer(1, 3),
+        el.append(KeepTogether([Spacer(1, 8), Paragraph("Valores por estrato", ST["cellb"]), Spacer(1, 3),
                                 data_table(list(df.columns), df.values.tolist(),
-                                           [0.34] + [0.66 / (len(df.columns) - 1)] * (len(df.columns) - 1))]))
+                                           [0.30] + [0.70 / (len(df.columns) - 1)] * (len(df.columns) - 1))]))
 
     # 5. Gráfico da medida móvel
     if info.get("serie"):
@@ -293,13 +312,10 @@ def build_pdf(info: dict) -> bytes:
 
     # Observações e assinaturas
     obs = (info.get("observacoes") or "").strip()
-    closing = [h1("Observações e aprovação")]
+    closing = [h1("Observações e responsável" if obs else "Responsável")]
     if obs:
         closing += [Paragraph(obs.replace("\n", "<br/>"), ST["body"]), Spacer(1, 14)]
-    closing += [Spacer(1, 10), signature_block(["Elaborado por", "Revisado por", "Aprovado por"],
-                                               {"Elaborado por": info.get("elaborado", ""),
-                                                "Revisado por": info.get("revisado", ""),
-                                                "Aprovado por": info.get("aprovado", "")})]
+    closing += [Spacer(1, 4), signature_block(["Elaborado por"], {"Elaborado por": info.get("elaborado", "")})]
     el.append(KeepTogether(closing))
 
     doc.build(el)

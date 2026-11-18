@@ -31,7 +31,8 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 - Limites alvo ± k·DP (alvo/DP da própria série ou manuais, como no Lab Operations); regra de pontos consecutivos.
 - Média-alvo e DP: média/DP dos blocos plotados ou manuais (com campo de fonte).
 - Gráfico com alarmes, taxa de falso alarme (% pontos, episódios, episódios/dia).
-- "Ver por equipamento" (2+ equipamentos selecionados): fluxo, alvo e DP próprios de cada equipamento, todos no mesmo gráfico em cores diferentes, com tabela de métricas por equipamento e a linha do fluxo combinado para comparação.
+- "Estratificar por" (nenhuma, equipamento, sexo, equipamento e sexo): cada estrato com fluxo, alvo e DP próprios, como cada perfil do Lab Operations. Cartões de métricas por estrato (em abas por equipamento no modo equipamento e sexo), gráfico com uma cor por estrato (um painel por sexo no modo combinado), tabela de comparação e volume diário.
+- "Elegíveis / dia": resultados dentro do truncamento e da população por dia com resultado, com o tempo aproximado para renovar um bloco de N (alerta acima de 48 h).
 
 - Relatório em PDF (A4): identificação, preparo dos dados (exclusão de outliers, filtros), gráfico média × nº de resultados por idade, configuração (tipo, bloco, pulo, truncamento e fontes), alvo/DP/limites e fontes (por equipamento, se ativado), gráfico da medida móvel e campos de assinatura. Não inclui a simulação de bias.
 

@@ -504,11 +504,20 @@ with tab2:
         sd_src = f"DP dos {fmt(len(ser), 0)} blocos plotados (DP das médias móveis)"
     consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
     multi_inst = len(sel_i) > 1
-    by_inst = st.checkbox(
-        "Ver por equipamento", value=False, disabled=not multi_inst,
-        help="Calcula a medida móvel separadamente em cada equipamento selecionado (fluxo próprio, alvo e DP "
-             "próprios) e plota todos no mesmo gráfico." if multi_inst else
-             "Selecione 2 ou mais equipamentos na barra lateral para habilitar.")
+    # Valores de sexo elegíveis para estratificar (ignora grupos residuais < 1%)
+    sex_counts = data2["sex"].dropna().astype(str).value_counts() if has_sex else pd.Series(dtype=int)
+    sex_pool = list(cfg.sexes) if cfg.sexes is not None else list(sex_counts.index)
+    sex_vals = [v for v in sex_pool if sex_counts.get(v, 0) >= 0.01 * max(len(data2), 1)]
+    sex_residual = [v for v in sex_pool if v not in sex_vals]
+    ST_NONE, ST_EQ, ST_SEX, ST_EQSEX = "Nenhuma", "Equipamento", "Sexo", "Equipamento e sexo"
+    strat_opts = [ST_NONE] + ([ST_EQ] if multi_inst else []) + ([ST_SEX] if len(sex_vals) > 1 else []) \
+        + ([ST_EQSEX] if multi_inst and len(sex_vals) > 1 else [])
+    strat = st.radio("Estratificar por", strat_opts, horizontal=True,
+                     help="Cada estrato vira um fluxo próprio, em ordem cronológica, com alvo e DP próprios, como cada "
+                          "perfil cadastrado no Lab Operations. Equipamento exige 2+ equipamentos na barra lateral; "
+                          "sexo exige a coluna de sexo e 2+ sexos no filtro de população.")
+    if strat in (ST_SEX, ST_EQSEX) and sex_residual:
+        st.caption(f"Sexo(s) com menos de 1% dos resultados ficaram fora dos estratos: {', '.join(sex_residual)}.")
 
     cfg = replace(cfg, k=k_lim, consec=consec,
                   target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None)
@@ -522,51 +531,98 @@ with tab2:
             return {n: p_[0] for n, p_ in zip(names, parts)}
         return {n: n for n in names}
 
-    def metric_row(n_elig, n_total, n_trunc_, n_pop, lim_, fa_):
-        cm = st.columns(6)
-        cm[0].metric("Resultados elegíveis", f"{n_elig} / {n_total}")
-        cm[1].metric("Fora do truncamento", f"{n_trunc_} ({100 * n_trunc_ / max(n_pop, 1):.1f}%)")
-        if lim_ is None:
-            cm[2].metric("Alvo", "—")
-            cm[3].caption(f"Insuficiente para bloco de {N}.")
-            return
-        cm[2].metric("Alvo", fmt(lim_["alvo"]))
-        cm[3].metric("DP", fmt(lim_["DP"], 4))
-        cm[4].metric("Pontos em alarme", f"{fa_['% pontos em alarme']:.1f}%")
-        cm[5].metric("Episódios de alarme / dia" if has_time else "Episódios / 1000 res.",
-                     fmt(fa_["episódios / dia"] if has_time else fa_["episódios / 1000 resultados"], 2))
+    def volume(dg: pd.DataFrame, ctx_) -> dict | None:
+        """Resultados elegíveis (dentro do truncamento e da população) por dia com resultado."""
+        if not has_time or len(dg) == 0:
+            return None
+        days = dg["t"].dt.normalize()
+        all_days = days.unique()
+        per = days.iloc[ctx_.elig_pos].value_counts().reindex(all_days, fill_value=0)
+        mean = ctx_.elig_pos.size / max(len(all_days), 1)
+        return {"mean": mean, "med": float(per.median()), "p10": float(per.quantile(0.10)),
+                "max": int(per.max()) if len(per) else 0, "daily": per,
+                "hours": (N / mean * 24) if mean > 0 else np.inf}
 
-    # Resultados por equipamento (fluxo, alvo e DP próprios)
-    inst_res = []
-    if by_inst:
-        names = [g.strip() for g in sel_i]
-        short = short_names(names)
-        for i, g in enumerate(names):
-            dg = data2[data2["group"] == g].reset_index(drop=True)
-            vg = dg["val"].to_numpy()
-            pop_g = mm.population_mask(dg, cfg)
-            ser_g, ctx_g = mm.compute_series(dg, cfg)
-            ok = len(ser_g) >= 5
-            lim_g = mm.control_limits(ser_g, cfg) if ok else None
-            inst_res.append(dict(
-                name=g, short=short[g], color=CAT[i] if i < len(CAT) else None, ser=ser_g, lim=lim_g,
-                fa=mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream) if ok else None,
-                n=len(dg), n_elig=int(ctx_g.elig_pos.size), n_pop=int(pop_g.sum()),
-                n_trunc=int((pop_g & ((vg < t_lo) | (vg > t_hi))).sum()),
-            ))
+    def stratum(dg: pd.DataFrame, label: str, color=None, eq=None, sex=None, base=None) -> dict:
+        dg = dg.reset_index(drop=True)
+        vg = dg["val"].to_numpy()
+        pop_g = mm.population_mask(dg, cfg)
+        ser_g, ctx_g = base if base else mm.compute_series(dg, cfg)
+        ok = len(ser_g) >= 5
+        lim_g = (lim if base else mm.control_limits(ser_g, cfg)) if ok else None
+        return dict(label=label, color=color, eq=eq, sex=sex, ser=ser_g, lim=lim_g,
+                    fa=(fa if base else mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream)) if ok else None,
+                    n=len(dg), n_elig=int(ctx_g.elig_pos.size), n_pop=int(pop_g.sum()),
+                    n_trunc=int((pop_g & ((vg < t_lo) | (vg > t_hi))).sum()), vol=volume(dg, ctx_g))
+
+    def sex_label(v) -> str:
+        return {"female": "Feminino", "f": "Feminino", "feminino": "Feminino",
+                "male": "Masculino", "m": "Masculino", "masculino": "Masculino"}.get(str(v).strip().lower(), str(v))
+
+    SEX_COLORS = ["#6250d6", "#1baf7a", "#eda100", "#e87ba4"]
+    geral = stratum(data2, "Geral (todos os estratos juntos)" if strat != ST_NONE else stat_lab, base=(ser, ctx))
+    strata: list[dict] = []
+    eq_names = [g.strip() for g in sel_i]
+    eq_short = short_names(eq_names) if eq_names else {}
+    if strat == ST_EQ:
+        for i, g in enumerate(eq_names):
+            strata.append(stratum(data2[data2["group"] == g], eq_short[g], CAT[i % len(CAT)], eq=eq_short[g]))
+    elif strat == ST_SEX:
+        for i, sx in enumerate(sex_vals):
+            strata.append(stratum(data2[data2["sex"] == sx], sex_label(sx), SEX_COLORS[i % 4], sex=sex_label(sx)))
+    elif strat == ST_EQSEX:
+        for i, g in enumerate(eq_names):
+            for sx in sex_vals:
+                sub = data2[(data2["group"] == g) & (data2["sex"] == sx)]
+                strata.append(stratum(sub, f"{eq_short[g]} · {sex_label(sx)}", CAT[i % len(CAT)],
+                                      eq=eq_short[g], sex=sex_label(sx)))
+
+    def metric_row(r_: dict):
+        cm = st.columns(7)
+        cm[0].metric(f"Elegíveis (de {fmt(r_['n'], 0)})", fmt(r_["n_elig"], 0))
+        cm[1].metric("Fora do truncamento", f"{fmt(r_['n_trunc'], 0)} ({100 * r_['n_trunc'] / max(r_['n_pop'], 1):.1f}%)")
+        v_ = r_["vol"]
+        cm[2].metric("Elegíveis / dia", fmt(v_["mean"], 1) if v_ else "—",
+                     help=(f"Média de resultados dentro do truncamento por dia com resultado. Mediana {fmt(v_['med'], 0)}, "
+                           f"P10 {fmt(v_['p10'], 0)}, máximo {v_['max']}.") if v_ else "Requer coluna de data.")
+        if r_["lim"] is None:
+            cm[3].metric("Alvo", "—")
+            cm[4].caption(f"Insuficiente para bloco de {N}.")
+            return
+        cm[3].metric("Alvo", fmt(r_["lim"]["alvo"]))
+        cm[4].metric("DP", fmt(r_["lim"]["DP"], 4))
+        cm[5].metric("Pontos em alarme", f"{r_['fa']['% pontos em alarme']:.1f}%")
+        cm[6].metric("Episódios / dia" if has_time else "Episódios / 1000 res.",
+                     fmt(r_["fa"]["episódios / dia"] if has_time else r_["fa"]["episódios / 1000 resultados"], 2))
+        if v_ and np.isfinite(v_["hours"]):
+            h_ = v_["hours"]
+            txt = f"Bloco de {N} se renova em ≈ {h_:.0f} h" + (f" (≈ {fmt(h_ / 24, 1)} dias)" if h_ >= 24 else "")
+            if h_ > 48:
+                st.warning(txt + ": o alarme reage devagar para este estrato.")
+            else:
+                st.caption(txt)
 
     def row_label(text, color=None):
         mark = f'<span style="color:{color};font-size:1.1em">■</span> ' if color else ""
         st.markdown(f"{mark}**{text}**", unsafe_allow_html=True)
 
-    if by_inst:
-        row_label("Todos (fluxo combinado)")
-    metric_row(int(elig.sum()), len(xv), n_trunc, int(pop.sum()), lim, fa)
-    for r_ in inst_res:
-        row_label(r_["short"], r_["color"])
-        metric_row(r_["n_elig"], r_["n"], r_["n_trunc"], r_["n_pop"], r_["lim"], r_["fa"])
-    if by_inst and (tgt_manual or sd_manual):
-        st.caption("Alvo/DP manuais são aplicados igualmente a todos os equipamentos.")
+    if strat != ST_NONE:
+        row_label(geral["label"])
+    metric_row(geral)
+    if strat == ST_EQSEX:
+        eq_order = list(dict.fromkeys(r_["eq"] for r_ in strata))
+        for t_, eq in zip(st.tabs(eq_order), eq_order):
+            with t_:
+                for r_ in strata:
+                    if r_["eq"] == eq:
+                        row_label(r_["label"], r_["color"])
+                        metric_row(r_)
+    else:
+        for r_ in strata:
+            row_label(r_["label"], r_["color"])
+            metric_row(r_)
+    if strata and (tgt_manual or sd_manual):
+        st.caption("Alvo/DP manuais são aplicados igualmente a todos os estratos.")
     if not (tgt_manual or sd_manual):
         st.caption("Alvo e DP calculados dos próprios blocos plotados (dentro da amostra): com k=2 cerca de 5% dos "
                    "pontos ficam fora por construção. Para avaliar limites já em uso no Lab Operations, use valores manuais.")
@@ -621,59 +677,91 @@ with tab2:
             fig.update_yaxes(range=[lo, hi])
         return base_layout(fig, 460, title=title, xaxis_title="data/hora" if (has_time and xaxis == "data/hora") else "nº do resultado")
 
-    if by_inst:
-        x_is_time = has_time and xaxis == "data/hora"
-        if len(inst_res) > len(CAT):
-            st.warning(f"Mais de {len(CAT)} equipamentos: o gráfico mostra os {len(CAT)} primeiros (a tabela mostra todos).")
-        rows = [{"equipamento": "Todos (fluxo combinado)", "resultados": len(xv), "elegíveis": int(elig.sum()),
-                 "fora do truncamento": n_trunc, "alvo": lim["alvo"], "DP": lim["DP"], "LI": lim["LI"], "LS": lim["LS"],
-                 "Δ alvo vs combinado (DP)": 0.0, "% pontos em alarme": fa["% pontos em alarme"],
-                 "episódios": fa["episódios de alarme"], "episódios / dia": fa["episódios / dia"]}]
-        fig = go.Figure()
-        alarm_legend = False
-        for r_ in inst_res:
-            g, ser_g, lim_g, fa_g, col = r_["name"], r_["ser"], r_["lim"], r_["fa"], r_["color"]
-            row = {"equipamento": r_["short"], "resultados": r_["n"], "elegíveis": r_["n_elig"],
-                   "fora do truncamento": r_["n_trunc"]}
-            if lim_g is not None:
-                row.update({"alvo": lim_g["alvo"], "DP": lim_g["DP"], "LI": lim_g["LI"], "LS": lim_g["LS"],
-                            "Δ alvo vs combinado (DP)": (lim_g["alvo"] - lim["alvo"]) / lim_g["DP"] if lim_g["DP"] else np.nan,
-                            "% pontos em alarme": fa_g["% pontos em alarme"], "episódios": fa_g["episódios de alarme"],
-                            "episódios / dia": fa_g["episódios / dia"]})
-            rows.append(row)
-            if lim_g is None or col is None:
+    x_is_time = has_time and xaxis == "data/hora"
+    if strata:
+        panels = list(dict.fromkeys(r_["sex"] for r_ in strata)) if strat == ST_EQSEX else [None]
+        if len(panels) > 1:
+            fig = make_subplots(rows=1, cols=len(panels), shared_yaxes=True, horizontal_spacing=0.03,
+                                subplot_titles=panels)
+        else:
+            fig = go.Figure()
+        alarm_legend, seen_legend = False, set()
+        for r_ in strata:
+            if r_["lim"] is None:
                 continue
+            ser_g, lim_g, col = r_["ser"], r_["lim"], r_["color"]
+            pos = dict(row=1, col=panels.index(r_["sex"]) + 1) if len(panels) > 1 else {}
+            leg_name = r_["eq"] if strat == ST_EQSEX else r_["label"]
             xs = ser_g["t"] if x_is_time else ser_g["seq"]
             cd = hover_cd(ser_g)
-            fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=r_["short"], legendgroup=g,
-                                     line=dict(color=col, width=2), customdata=cd,
-                                     hovertemplate=f"{r_['short']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"))
+            fig.add_trace(go.Scatter(x=xs, y=ser_g["valor"], mode="lines", name=leg_name, legendgroup=leg_name,
+                                     showlegend=leg_name not in seen_legend, line=dict(color=col, width=1.8),
+                                     customdata=cd,
+                                     hovertemplate=f"{r_['label']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"), **pos)
+            seen_legend.add(leg_name)
             x_rng = [xs.min(), xs.max()]
             for key, dash in (("LS", "dash"), ("LI", "dash"), ("alvo", "dot")):
-                fig.add_trace(go.Scatter(x=x_rng, y=[lim_g[key]] * 2, mode="lines", legendgroup=g, showlegend=False,
-                                         line=dict(color=col, dash=dash, width=1),
-                                         hovertemplate=f"{r_['short']} {key}: {lim_g[key]:.4f}<extra></extra>"))
+                fig.add_trace(go.Scatter(x=x_rng, y=[lim_g[key]] * 2, mode="lines", legendgroup=leg_name,
+                                         showlegend=False, line=dict(color=col, dash=dash, width=1),
+                                         hovertemplate=f"{r_['label']} {key}: {lim_g[key]:.4f}<extra></extra>"), **pos)
             al = mm.alarm_flags(ser_g["valor"].to_numpy(), lim_g, cfg.consec)
-            fig.add_trace(go.Scatter(x=xs[al], y=ser_g["valor"][al], mode="markers", legendgroup=g, showlegend=False,
-                                     marker=dict(color=col, size=9, line=dict(color="white", width=1.5)),
+            fig.add_trace(go.Scatter(x=xs[al], y=ser_g["valor"][al], mode="markers", legendgroup=leg_name,
+                                     showlegend=False, marker=dict(color=col, size=9, line=dict(color="white", width=1.5)),
                                      customdata=cd[al],
-                                     hovertemplate=f"alarme {r_['short']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"))
+                                     hovertemplate=f"alarme {r_['label']}: %{{y:.4f}}" + HOVER_PT + "<extra></extra>"), **pos)
             alarm_legend = alarm_legend or bool(al.any())
-        if alarm_legend:  # entrada de legenda neutra: o alarme herda a cor do equipamento
-            fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="alarme (cor do equipamento)",
+        if alarm_legend:  # entrada de legenda neutra: o alarme herda a cor do estrato
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="alarme (cor do estrato)",
                                      marker=dict(color=MUTED, size=9, line=dict(color="white", width=1.5))))
-        fig.update_xaxes(title="data/hora" if x_is_time else "nº do resultado no equipamento")
-        st.plotly_chart(base_layout(fig, 500, title=f"{stat_lab}: {N}-{step} por equipamento "
-                                    "(tracejado = LI/LS, pontilhado = alvo, na cor do equipamento)",
-                                    hovermode="closest"), width="stretch")
-        st.dataframe(pd.DataFrame(rows).round(4), hide_index=True, width="stretch")
-        st.caption("Cada equipamento tem fluxo, alvo e DP próprios (a não ser que alvo/DP sejam manuais). "
-                   "Δ alvo vs combinado = quanto o alvo do equipamento se afasta do alvo do fluxo combinado, em DPs do "
-                   "próprio equipamento. Valores acima de ~0,3 DP indicam que um alvo único deslocaria os falsos "
-                   "alarmes para um lado. Clique na legenda para esconder/mostrar um equipamento.")
+        fig.update_xaxes(title="data/hora" if x_is_time else "nº do resultado no estrato")
+        ttl = (f"{stat_lab}: {N}-{step} por equipamento, um painel por sexo" if strat == ST_EQSEX else
+               f"{stat_lab}: {N}-{step} por {strat.lower()}")
+        fig = base_layout(fig, 540 if len(panels) > 1 else 500,
+                          title=ttl + " (tracejado = LI/LS, pontilhado = alvo)", hovermode="closest")
+        if len(panels) > 1:  # legenda acima dos títulos dos painéis
+            fig.update_layout(margin=dict(t=125), legend=dict(y=1.16))
+        st.plotly_chart(fig, width="stretch")
+
+        def table_row(r_: dict) -> dict:
+            v_, l_, f_ = r_["vol"], r_["lim"], r_["fa"]
+            row = {"estrato": r_["label"], "resultados": r_["n"], "elegíveis": r_["n_elig"],
+                   "fora do truncamento": r_["n_trunc"],
+                   "elegíveis/dia": round(v_["mean"], 1) if v_ else np.nan,
+                   "mediana/dia": v_["med"] if v_ else np.nan,
+                   "bloco se renova em (h)": round(v_["hours"]) if v_ and np.isfinite(v_["hours"]) else np.nan}
+            if l_ is not None:
+                row.update({"alvo": l_["alvo"], "DP": l_["DP"], "LI": l_["LI"], "LS": l_["LS"],
+                            "Δ alvo vs geral (DP)": (l_["alvo"] - lim["alvo"]) / l_["DP"] if l_["DP"] else np.nan,
+                            "% pontos em alarme": f_["% pontos em alarme"], "episódios": f_["episódios de alarme"],
+                            "episódios/dia": f_["episódios / dia"]})
+            return row
+
+        st.markdown("**Comparação entre estratos**")
+        st.dataframe(pd.DataFrame([table_row(geral)] + [table_row(r_) for r_ in strata]).round(4),
+                     hide_index=True, width="stretch")
+        st.caption("Cada estrato tem fluxo, alvo e DP próprios (a não ser que alvo/DP sejam manuais). "
+                   "Δ alvo vs geral = distância entre o alvo do estrato e o alvo geral, em DPs do próprio estrato: "
+                   "acima de ~0,3 DP, um alvo único desloca os falsos alarmes para um lado. "
+                   "Clique na legenda do gráfico para esconder/mostrar um estrato.")
     else:
         st.plotly_chart(series_figure(ser, lim, f"{stat_lab}: {N}-{step}", raw_vals=xv if show_raw else None),
                         width="stretch")
+
+    if has_time:
+        with st.expander("Volume diário dentro do truncamento", expanded=bool(strata)):
+            fig = go.Figure()
+            for r_ in [geral] + strata:
+                if r_["vol"] is None:
+                    continue
+                fig.add_trace(go.Box(y=r_["vol"]["daily"].values, name=r_["label"].replace(" (todos os estratos juntos)", ""),
+                                     marker_color=r_["color"] or MUTED, boxpoints=False,
+                                     hovertemplate="%{y} resultados/dia<extra></extra>"))
+            fig.add_hline(y=N, line_dash="dot", line_color=ALARM, annotation_text=f"N = {N}")
+            fig.update_yaxes(title="resultados elegíveis por dia")
+            st.plotly_chart(base_layout(fig, 360, title="Resultados elegíveis por dia (cada caixa = distribuição dos dias)",
+                                        showlegend=False, hovermode="closest"), width="stretch")
+            st.caption("Quando a caixa fica abaixo da linha N, um bloco não se completa num dia típico: a medida "
+                       "móvel daquele estrato reage a um erro só no dia seguinte ou depois.")
 
     with st.expander("Comparar as quatro estatísticas com a mesma configuração (falsos alarmes)"):
         rows = []
@@ -698,10 +786,8 @@ with tab2:
         a, b = st.columns(2)
         rp_analito = a.text_input("Analito", value=str(sel_t) if sel_t else c_res)
         rp_setor = b.text_input("Laboratório / setor")
-        a, b, c = st.columns(3)
+        a, _ = st.columns(2)
         rp_elab = a.text_input("Elaborado por")
-        rp_rev = b.text_input("Revisado por")
-        rp_apr = c.text_input("Aprovado por")
         rp_obs = st.text_area("Observações (opcional)", height=80)
         gen = st.form_submit_button("Gerar relatório PDF", type="primary")
     if gen:
@@ -720,9 +806,11 @@ with tab2:
             ["Resultados lidos", f"{fmt(rep['linhas_validas'], 0)} válidos de {fmt(rep['linhas_lidas'], 0)} linhas "
              "(descartadas: sem resultado numérico" + (" ou sem data/hora)" if has_time else ")")],
         ]
-        if multi_inst:
-            prep_rows.append(["Equipamentos", "Fluxos avaliados separadamente por equipamento" if by_inst else
-                              "Fluxo único com os equipamentos em ordem cronológica"])
+        prep_rows.append(["Estratificação", {
+            ST_NONE: "Nenhuma: fluxo único" + (" com os equipamentos em ordem cronológica" if multi_inst else ""),
+            ST_EQ: "Por equipamento: fluxo, alvo e DP próprios em cada um",
+            ST_SEX: "Por sexo: fluxo, alvo e DP próprios em cada um",
+            ST_EQSEX: "Por equipamento e sexo: fluxo, alvo e DP próprios em cada combinação"}[strat]])
         cfg_rows = [
             ["Tipo de medida móvel", stat_lab, "—"],
             ["Tamanho do bloco (N)", f"{N} resultados", "—"],
@@ -738,7 +826,12 @@ with tab2:
              "Substituídos pelo limite", f"{fmt(n_trunc, 0)} resultados ({fmt(100 * n_trunc / max(pop.sum(), 1), 1)}%) "
              "no período"],
         ]
-        tag = " (fluxo combinado)" if by_inst else ""
+        if geral["vol"]:
+            gv = geral["vol"]
+            cfg_rows.append(["Resultados elegíveis por dia" + (" (geral)" if strata else ""), fmt(gv["mean"], 1),
+                             f"Média nos dias com resultado (mediana {fmt(gv['med'], 0)}); bloco de {N} se renova "
+                             f"em cerca de {gv['hours']:.0f} h"])
+        tag = " (geral)" if strata else ""
         lim_rows = [
             [f"Valor-alvo{tag}", fmt(lim["alvo"], 4), tgt_src],
             [f"DP{tag}", fmt(lim["DP"], 4), sd_src],
@@ -750,18 +843,31 @@ with tab2:
         ]
         lim_eq = None
         x_is_time = has_time
-        if by_inst and inst_res:
+        if strata:
             lim_eq = pd.DataFrame([{
-                "Equipamento": r_["short"], "Alvo": fmt(r_["lim"]["alvo"], 4) if r_["lim"] else "—",
+                "Estrato": r_["label"],
+                "Eleg./dia": fmt(r_["vol"]["mean"], 1) if r_["vol"] else "—",
+                "Alvo": fmt(r_["lim"]["alvo"], 4) if r_["lim"] else "—",
                 "DP": fmt(r_["lim"]["DP"], 4) if r_["lim"] else "—", "LI": fmt(r_["lim"]["LI"], 4) if r_["lim"] else "—",
                 "LS": fmt(r_["lim"]["LS"], 4) if r_["lim"] else "—",
-                "Pontos fora (%)": fmt(r_["fa"]["% pontos em alarme"], 1) if r_["fa"] else "—"} for r_ in inst_res])
-            itens = [{"nome": r_["short"], "x": r_["ser"]["t"] if x_is_time else r_["ser"]["seq"], "y": r_["ser"]["valor"],
-                      "lim": r_["lim"], "alarme": mm.alarm_flags(r_["ser"]["valor"].to_numpy(), r_["lim"], cfg.consec)}
-                     for r_ in inst_res if r_["lim"] is not None][:len(CAT)]
-            fig_note = ("Cada equipamento com fluxo, alvo e DP próprios" if not (tgt_manual or sd_manual)
-                        else "Alvo/DP manuais aplicados a todos os equipamentos")
+                "Pontos fora (%)": fmt(r_["fa"]["% pontos em alarme"], 1) if r_["fa"] else "—"} for r_ in strata])
+
+            def pdf_item(r_):
+                return {"nome": r_["eq"] if strat == ST_EQSEX else r_["label"], "cor": r_["color"],
+                        "x": r_["ser"]["t"] if x_is_time else r_["ser"]["seq"], "y": r_["ser"]["valor"], "lim": r_["lim"],
+                        "alarme": mm.alarm_flags(r_["ser"]["valor"].to_numpy(), r_["lim"], cfg.consec)}
+            ok_strata = [r_ for r_ in strata if r_["lim"] is not None]
+            if strat == ST_EQSEX:
+                paineis = [{"titulo": sx, "itens": [pdf_item(r_) for r_ in ok_strata if r_["sex"] == sx]}
+                           for sx in dict.fromkeys(r_["sex"] for r_ in ok_strata)]
+                itens = None
+            else:
+                paineis = None
+                itens = [pdf_item(r_) for r_ in ok_strata]
+            fig_note = ("Cada estrato com fluxo, alvo e DP próprios" if not (tgt_manual or sd_manual)
+                        else "Alvo/DP manuais aplicados a todos os estratos")
         else:
+            paineis = None
             itens = [{"nome": stat_lab, "x": ser["t"] if x_is_time else ser["seq"], "y": ser["valor"], "lim": lim,
                       "alarme": mm.alarm_flags(ser["valor"].to_numpy(), lim, cfg.consec)}]
             fig_note = (f"{fmt(fa['% pontos em alarme'], 1)}% dos pontos fora dos limites; "
@@ -787,10 +893,10 @@ with tab2:
                               ("Arquivo de origem", f"{up.name}" + (f" (aba {sheet})" if sheet else ""))],
             "preparo": prep_rows, "idade": age_info,
             "config": cfg_rows, "limites": lim_rows, "limites_equip": lim_eq,
-            "serie": {"itens": itens, "x_is_time": x_is_time, "ylabel": stat_lab.split(" (")[0].lower(),
+            "serie": {"itens": itens, "paineis": paineis, "x_is_time": x_is_time, "ylabel": stat_lab.split(" (")[0].lower(),
                       "legenda": f"Figura {2 if age_info else 1} – {stat_lab} {N}-{step} calculada sobre os dados do "
                                  f"período, com alvo (pontilhado) e limites LI/LS (tracejado). {fig_note}."},
-            "observacoes": rp_obs, "elaborado": rp_elab, "revisado": rp_rev, "aprovado": rp_apr,
+            "observacoes": rp_obs, "elaborado": rp_elab,
             "emitido": pd.Timestamp.now(tz="America/Sao_Paulo").to_pydatetime(),
         }
         with st.spinner("Gerando PDF…"):
