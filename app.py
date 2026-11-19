@@ -584,7 +584,7 @@ with tab2:
             st.session_state["alvo_manual"] = round(blocks_mean, 4)
         if tgt_manual:
             tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
-            f_ = b.text_input("Fonte do alvo *", placeholder="ex.: alvo cadastrado no software em dd/mm",
+            f_ = b.text_input("Fonte do alvo *", placeholder="ex.: Média ponderada dos equipamentos",
                               key="fonte_alvo").strip()
             tgt_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
             if not f_:
