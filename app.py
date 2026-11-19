@@ -371,8 +371,8 @@ with tab1:
     k_tukey = b.number_input("k do Tukey (IQR)", 0.5, 5.0, 1.5, 0.5, help="1,5 = outlier; 3,0 = outlier extremo")
     iterative = c.checkbox("Tukey iterativo", help="Repete até não restarem outliers")
     use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 3 e 4", value=False,
-                        help="O middleware aplica exclusão de outliers em tempo real? Caso ative a opção, as simulações irão usar "
-                             "uma população "mais limpa" estatisticamente."),
+                        help=" O middleware aplica exclusão de outliers em tempo real? Caso ative a opção, as simulações irão usar "
+                             "uma população "mais limpa" estatisticamente.")
     oa = mm.outlier_analysis(x, tr, k_tukey, iterative)
     st.caption(
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
