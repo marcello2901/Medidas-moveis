@@ -206,7 +206,7 @@ def signature_block(roles: list[str], names: dict[str, str]) -> Table:
     for r in roles:
         nm = names.get(r) or ""
         cells.append(Table([
-            [_p(r.upper(), "label")],
+            [Spacer(1, 9.5)],  # mesma altura do antigo rótulo ("ELABORADO POR"), mantendo a distância até a linha
             [Spacer(1, 16)],
             [_p(nm or "&nbsp;", "cell")],
             [_p("Assinatura / data", "label")],
