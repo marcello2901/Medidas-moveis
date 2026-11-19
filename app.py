@@ -372,7 +372,7 @@ with tab1:
     iterative = c.checkbox("Tukey iterativo", help="Repete até não restarem outliers")
     use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 3 e 4", value=False,
                         help="O middleware aplica exclusão de outliers em tempo real? Caso ative a opção, as simulações irão usar "
-                             "uma população "mais limpa" estatisticamente.")
+                             "uma população "mais limpa" estatisticamente."),
     oa = mm.outlier_analysis(x, tr, k_tukey, iterative)
     st.caption(
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
