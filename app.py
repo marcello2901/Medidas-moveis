@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from dataclasses import replace
 
 import numpy as np
@@ -371,14 +372,14 @@ with tab1:
     k_tukey = b.number_input("k do Tukey (IQR)", 0.5, 5.0, 1.5, 0.5, help="1,5 = outlier; 3,0 = outlier extremo")
     iterative = c.checkbox("Tukey iterativo", help="Repete até não restarem outliers")
     use_out = d_.toggle("Excluir outliers dos dados usados nas etapas 3 e 4", value=False,
-                        help="O middleware aplica exclusão de outliers em tempo real? Caso ative a opção, as simulações irão usar "
-                             "uma população \"mais limpa\" estatisticamente.")
+                        help="O middleware aplica exclusão de outliers em tempo real? Caso ative a opção, as simulações "
+                             "irão usar uma população 'mais limpa' estatisticamente.")
     oa = mm.outlier_analysis(x, tr, k_tukey, iterative)
     st.caption(
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
         f"{oa['n_out']} resultados fora ({100 * oa['n_out'] / len(x):.2f}%). "
         + (f"λ Box-Cox = {oa['lambda']:.3f}. " if "lambda" in oa else "")
-        + "Na etapa 3 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência."
+        + "Na etapa 3 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência da planilha."
     )
     if use_out:
         st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 3 e 4.")
@@ -451,7 +452,7 @@ with tab2:
         vc = data2["ref"].dropna().value_counts()
         ref_opts = [(txt, int(n), mm.parse_ref_range(txt)) for txt, n in vc.items()]
         ref_opts = [o for o in ref_opts if o[2] is not None]
-    SRC_RI, SRC_TK, SRC_PC, SRC_MAN = ("Intervalo de referência", "Cercas de Tukey (etapa 2)",
+    SRC_RI, SRC_TK, SRC_PC, SRC_MAN = ("Intervalo de referência da planilha", "Cercas de Tukey (etapa 2)",
                                        "Percentis dos resultados", "Manual")
     src_opts = ([SRC_RI] if ref_opts else []) + [SRC_TK, SRC_PC, SRC_MAN]
     a, b = st.columns([1, 2])
@@ -475,7 +476,7 @@ with tab2:
         r_lo, r_hi = ref_sel[2]
         sug_lo = r_lo if r_lo is not None else float(xv.min())  # lado aberto = sem truncamento naquele lado
         sug_hi = r_hi if r_hi is not None else float(xv.max())
-        trunc_src = f"Intervalo de referência ({ref_sel[0]})"
+        trunc_src = f"Intervalo de referência da planilha ({ref_sel[0]})"
     else:
         sug_lo, sug_hi, trunc_src = tk_lo, tk_hi, tk_src
     if src == SRC_PC:
@@ -556,7 +557,7 @@ with tab2:
     st.subheader("Limites de controle")
     strat = st.radio("Estratificar por", strat_opts, horizontal=True,
                      help="Cada estrato vira um fluxo próprio, em ordem cronológica, com alvo e DP próprios, como cada "
-                          "perfil cadastrado no software. Equipamento exige 2+ equipamentos na barra lateral; "
+                          "perfil cadastrado no Lab Operations. Equipamento exige 2+ equipamentos na barra lateral; "
                           "sexo exige a coluna de sexo e 2+ sexos no filtro de população.")
     if strat in (ST_SEX, ST_EQSEX) and sex_residual:
         st.caption(f"Sexo(s) com menos de 1% dos resultados ficaram fora dos estratos: {', '.join(sex_residual)}.")
@@ -584,7 +585,7 @@ with tab2:
             st.session_state["alvo_manual"] = round(blocks_mean, 4)
         if tgt_manual:
             tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
-            f_ = b.text_input("Fonte do alvo *", placeholder="ex.: Média ponderada dos equipamentos",
+            f_ = b.text_input("Fonte do alvo *", placeholder="ex.: alvo cadastrado no Lab Operations em dd/mm",
                               key="fonte_alvo").strip()
             tgt_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
             if not f_:
@@ -691,7 +692,7 @@ with tab2:
                 a_val = row[1].number_input(f"Alvo · {r_['label']}", format="%.4f", key=k_,
                                             label_visibility="collapsed")
                 f_ = row[2].text_input(f"Fonte do alvo · {r_['label']}", key=f"fonte_alvo_estrato|{kb}",
-                                       placeholder="ex.: média geral calculada",
+                                       placeholder="ex.: perfil feminino no Lab Operations",
                                        label_visibility="collapsed").strip()
                 r_["src_alvo"] = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
                 if not f_:
@@ -771,7 +772,7 @@ with tab2:
             metric_row(r_)
     if not (tgt_manual or sd_manual):
         st.caption("Alvo e DP calculados dos próprios blocos plotados (dentro da amostra): com k=2 cerca de 5% dos "
-                   "pontos ficam fora por construção. Para avaliar limites já em uso no software, use valores manuais.")
+                   "pontos ficam fora por construção. Para avaliar limites já em uso no Lab Operations, use valores manuais.")
 
     a, b, c = st.columns([1, 1, 2])
     xaxis = a.radio("Eixo X", ["data/hora", "sequência"], horizontal=True, disabled=not has_time)
@@ -1060,8 +1061,9 @@ with tab2:
         }
         with st.spinner("Gerando PDF…"):
             st.session_state["pdf"] = report.build_pdf(info)
-            st.session_state["pdf_name"] = (f"relatorio_medida_movel_{rp_analito}_{stat}_{N}-{step}.pdf"
-                                            .replace(" ", "_").replace("/", "-"))
+            # Nome legível; remove só os caracteres que o Windows/macOS não aceitam em nome de arquivo
+            analito_nome = re.sub(r'[\\/:*?"<>|]+', "-", rp_analito.strip()) or "Analito"
+            st.session_state["pdf_name"] = f"Relatório de Medida Móvel {analito_nome} - {N}-{step}.pdf"
     if "pdf" in st.session_state:
         st.download_button("Baixar relatório PDF", st.session_state["pdf"], file_name=st.session_state["pdf_name"],
                            mime="application/pdf")
