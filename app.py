@@ -691,7 +691,7 @@ with tab2:
                 a_val = row[1].number_input(f"Alvo · {r_['label']}", format="%.4f", key=k_,
                                             label_visibility="collapsed")
                 f_ = row[2].text_input(f"Fonte do alvo · {r_['label']}", key=f"fonte_alvo_estrato|{kb}",
-                                       placeholder="ex.: perfil feminino no software",
+                                       placeholder="ex.: média geral calculada",
                                        label_visibility="collapsed").strip()
                 r_["src_alvo"] = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
                 if not f_:
