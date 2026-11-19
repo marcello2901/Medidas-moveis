@@ -378,7 +378,7 @@ with tab1:
         f"Cercas em unidade original: **{fmt(oa['lo'])} a {fmt(oa['hi'])}**: "
         f"{oa['n_out']} resultados fora ({100 * oa['n_out'] / len(x):.2f}%). "
         + (f"λ Box-Cox = {oa['lambda']:.3f}. " if "lambda" in oa else "")
-        + "Na etapa 3 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência da planilha."
+        + "Na etapa 3 você escolhe se a sugestão de truncamento vem destas cercas ou do intervalo de referência."
     )
     if use_out:
         st.warning(f"Exclusão ativa: {oa['n_out']} resultados removidos das etapas 3 e 4.")
@@ -451,7 +451,7 @@ with tab2:
         vc = data2["ref"].dropna().value_counts()
         ref_opts = [(txt, int(n), mm.parse_ref_range(txt)) for txt, n in vc.items()]
         ref_opts = [o for o in ref_opts if o[2] is not None]
-    SRC_RI, SRC_TK, SRC_PC, SRC_MAN = ("Intervalo de referência da planilha", "Cercas de Tukey (etapa 2)",
+    SRC_RI, SRC_TK, SRC_PC, SRC_MAN = ("Intervalo de referência", "Cercas de Tukey (etapa 2)",
                                        "Percentis dos resultados", "Manual")
     src_opts = ([SRC_RI] if ref_opts else []) + [SRC_TK, SRC_PC, SRC_MAN]
     a, b = st.columns([1, 2])
@@ -475,7 +475,7 @@ with tab2:
         r_lo, r_hi = ref_sel[2]
         sug_lo = r_lo if r_lo is not None else float(xv.min())  # lado aberto = sem truncamento naquele lado
         sug_hi = r_hi if r_hi is not None else float(xv.max())
-        trunc_src = f"Intervalo de referência da planilha ({ref_sel[0]})"
+        trunc_src = f"Intervalo de referência ({ref_sel[0]})"
     else:
         sug_lo, sug_hi, trunc_src = tk_lo, tk_hi, tk_src
     if src == SRC_PC:
