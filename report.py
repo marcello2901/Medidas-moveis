@@ -304,6 +304,10 @@ def build_pdf(info: dict) -> bytes:
         el.append(KeepTogether([Spacer(1, 8), Paragraph("Valores por estrato", ST["cellb"]), Spacer(1, 3),
                                 data_table(list(df.columns), df.values.tolist(),
                                            [0.30] + [0.70 / (len(df.columns) - 1)] * (len(df.columns) - 1))]))
+    if info.get("fontes_estrato") is not None:
+        df = info["fontes_estrato"]
+        el.append(KeepTogether([Spacer(1, 8), Paragraph("Fontes do alvo e do DP por estrato", ST["cellb"]), Spacer(1, 3),
+                                data_table(list(df.columns), df.values.tolist(), [0.30, 0.35, 0.35])]))
 
     # 5. Gráfico da medida móvel
     if info.get("serie"):

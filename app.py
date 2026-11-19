@@ -542,41 +542,7 @@ with tab2:
     blocks_mean = float(ser["valor"].mean())
     blocks_sd = float(ser["valor"].std(ddof=1))
 
-    st.subheader("Limites de controle")
-    a, b, c, d_ = st.columns(4)
-    k_lim = a.number_input("k (limites = alvo ± k·DP)", 0.5, 6.0, 2.0, 0.5)
-    tgt_mode = b.radio("Média-alvo", ["Média dos blocos plotados", "Manual"],
-                       help="Média dos blocos plotados = média de todos os pontos da medida móvel no gráfico "
-                            "(média das médias móveis; na mediana móvel, média das medianas).")
-    if "alvo_manual" not in st.session_state:
-        st.session_state["alvo_manual"] = round(blocks_mean, 4)
-    tgt_manual = tgt_mode == "Manual"
-    if tgt_manual:
-        tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
-        f_ = b.text_input("Fonte do alvo *", placeholder="ex.: alvo cadastrado no Lab Operations em dd/mm",
-                          key="fonte_alvo").strip()
-        tgt_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
-        if not f_:
-            b.warning("Informe a fonte do alvo.")
-    else:
-        tgt = blocks_mean
-        b.caption(f"Alvo = {fmt(blocks_mean, 4)} ({len(ser)} blocos)")
-        tgt_src = f"Média dos {fmt(len(ser), 0)} blocos plotados (média das médias móveis)"
-    sd_mode = c.radio("DP", ["DP dos blocos plotados", "Manual"])
-    if "dp_manual" not in st.session_state:
-        st.session_state["dp_manual"] = round(blocks_sd, 4)
-    sd_manual = sd_mode == "Manual"
-    if sd_manual:
-        sdv = c.number_input("DP manual", min_value=0.0, format="%.4f", key="dp_manual")
-        f_ = c.text_input("Fonte do DP *", placeholder="ex.: DP da série histórica jan–mar/2026", key="fonte_dp").strip()
-        sd_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
-        if not f_:
-            c.warning("Informe a fonte do DP.")
-    else:
-        sdv = blocks_sd
-        c.caption(f"DP = {fmt(blocks_sd, 4)}")
-        sd_src = f"DP dos {fmt(len(ser), 0)} blocos plotados (DP das médias móveis)"
-    consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
+    # ---- Estratificação: escolhida antes dos limites, porque cada estrato pode ter alvo/DP próprios
     multi_inst = len(sel_i) > 1
     # Valores de sexo elegíveis para estratificar (ignora grupos residuais < 1%)
     sex_counts = data2["sex"].dropna().astype(str).value_counts() if has_sex else pd.Series(dtype=int)
@@ -586,15 +552,62 @@ with tab2:
     ST_NONE, ST_EQ, ST_SEX, ST_EQSEX = "Nenhuma", "Equipamento", "Sexo", "Equipamento e sexo"
     strat_opts = [ST_NONE] + ([ST_EQ] if multi_inst else []) + ([ST_SEX] if len(sex_vals) > 1 else []) \
         + ([ST_EQSEX] if multi_inst and len(sex_vals) > 1 else [])
+
+    st.subheader("Limites de controle")
     strat = st.radio("Estratificar por", strat_opts, horizontal=True,
                      help="Cada estrato vira um fluxo próprio, em ordem cronológica, com alvo e DP próprios, como cada "
                           "perfil cadastrado no Lab Operations. Equipamento exige 2+ equipamentos na barra lateral; "
                           "sexo exige a coluna de sexo e 2+ sexos no filtro de população.")
     if strat in (ST_SEX, ST_EQSEX) and sex_residual:
         st.caption(f"Sexo(s) com menos de 1% dos resultados ficaram fora dos estratos: {', '.join(sex_residual)}.")
+    stratified = strat != ST_NONE
 
+    a, b, c, d_ = st.columns(4)
+    k_lim = a.number_input("k (limites = alvo ± k·DP)", 0.5, 6.0, 2.0, 0.5)
+    tgt_mode = b.radio("Média-alvo", ["Média dos blocos plotados", "Manual"],
+                       help="Média dos blocos plotados = média de todos os pontos da medida móvel no gráfico "
+                            "(média das médias móveis; na mediana móvel, média das medianas). Com estratificação, "
+                            "o valor manual é informado para cada estrato.")
+    sd_mode = c.radio("DP", ["DP dos blocos plotados", "Manual"])
+    tgt_manual, sd_manual = tgt_mode == "Manual", sd_mode == "Manual"
+    AUTO_TGT_SRC = "Média dos {n} blocos plotados (média das médias móveis)"
+    AUTO_SD_SRC = "DP dos {n} blocos plotados (DP das médias móveis)"
+    tgt, sdv = blocks_mean, blocks_sd
+    tgt_src = AUTO_TGT_SRC.format(n=fmt(len(ser), 0))
+    sd_src = AUTO_SD_SRC.format(n=fmt(len(ser), 0))
+    if stratified:
+        # O geral fica pelos blocos; valores manuais vão por estrato, na tabela logo abaixo
+        b.caption("Informe por estrato na tabela abaixo." if tgt_manual else f"Geral = {fmt(blocks_mean, 4)}")
+        c.caption("Informe por estrato na tabela abaixo." if sd_manual else f"Geral = {fmt(blocks_sd, 4)}")
+    else:
+        if "alvo_manual" not in st.session_state:
+            st.session_state["alvo_manual"] = round(blocks_mean, 4)
+        if tgt_manual:
+            tgt = b.number_input("Alvo manual", format="%.4f", key="alvo_manual")
+            f_ = b.text_input("Fonte do alvo *", placeholder="ex.: alvo cadastrado no Lab Operations em dd/mm",
+                              key="fonte_alvo").strip()
+            tgt_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+            if not f_:
+                b.warning("Informe a fonte do alvo.")
+        else:
+            b.caption(f"Alvo = {fmt(blocks_mean, 4)} ({len(ser)} blocos)")
+        if "dp_manual" not in st.session_state:
+            st.session_state["dp_manual"] = round(blocks_sd, 4)
+        if sd_manual:
+            sdv = c.number_input("DP manual", min_value=0.0, format="%.4f", key="dp_manual")
+            f_ = c.text_input("Fonte do DP *", placeholder="ex.: DP da série histórica jan–mar/2026",
+                              key="fonte_dp").strip()
+            sd_src = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+            if not f_:
+                c.warning("Informe a fonte do DP.")
+        else:
+            c.caption(f"DP = {fmt(blocks_sd, 4)}")
+    consec = int(d_.number_input("Pontos consecutivos fora para alarmar", 1, 10, 1, 1))
+
+    geral_manual = not stratified
     cfg = replace(cfg, k=k_lim, consec=consec,
-                  target=tgt if tgt_manual else None, sd=sdv if (sd_manual and sdv > 0) else None)
+                  target=tgt if (tgt_manual and geral_manual) else None,
+                  sd=sdv if (sd_manual and geral_manual and sdv > 0) else None)
     lim = mm.control_limits(ser, cfg)
     fa = mm.false_alarm_summary(ser, lim, cfg, ctx.n_stream)
 
@@ -624,7 +637,11 @@ with tab2:
         ser_g, ctx_g = base if base else mm.compute_series(dg, cfg)
         ok = len(ser_g) >= 5
         lim_g = (lim if base else mm.control_limits(ser_g, cfg)) if ok else None
-        return dict(label=label, color=color, eq=eq, sex=sex, ser=ser_g, lim=lim_g,
+        n_blk = fmt(len(ser_g), 0)
+        return dict(label=label, color=color, eq=eq, sex=sex, ser=ser_g, lim=lim_g, n_stream=ctx_g.n_stream,
+                    auto_alvo=float(ser_g["valor"].mean()) if ok else np.nan,
+                    auto_dp=float(ser_g["valor"].std(ddof=1)) if ok else np.nan,
+                    src_alvo=AUTO_TGT_SRC.format(n=n_blk), src_dp=AUTO_SD_SRC.format(n=n_blk),
                     fa=(fa if base else mm.false_alarm_summary(ser_g, lim_g, cfg, ctx_g.n_stream)) if ok else None,
                     n=len(dg), n_elig=int(ctx_g.elig_pos.size), n_pop=int(pop_g.sum()),
                     n_trunc=int((pop_g & ((vg < t_lo) | (vg > t_hi))).sum()), vol=volume(dg, ctx_g))
@@ -634,7 +651,8 @@ with tab2:
                 "male": "Masculino", "m": "Masculino", "masculino": "Masculino"}.get(str(v).strip().lower(), str(v))
 
     SEX_COLORS = ["#6250d6", "#1baf7a", "#eda100", "#e87ba4"]
-    geral = stratum(data2, "Geral (todos os estratos juntos)" if strat != ST_NONE else stat_lab, base=(ser, ctx))
+    geral = stratum(data2, "Geral (todos os estratos juntos)" if stratified else stat_lab, base=(ser, ctx))
+    geral["src_alvo"], geral["src_dp"] = tgt_src, sd_src
     strata: list[dict] = []
     eq_names = [g.strip() for g in sel_i]
     eq_short = short_names(eq_names) if eq_names else {}
@@ -651,10 +669,66 @@ with tab2:
                 strata.append(stratum(sub, f"{eq_short[g]} · {sex_label(sx)}", CAT[i % len(CAT)],
                                       eq=eq_short[g], sex=sex_label(sx)))
 
+    # ---- Alvo e DP manuais por estrato (cada um com sua fonte); limites e gráfico seguem esses valores
+    if strata and (tgt_manual or sd_manual):
+        st.markdown("**Alvo e DP por estrato**")
+        hdr = st.columns([1.7, 1, 2, 1, 2])
+        for h_, txt_ in zip(hdr, ["Estrato", "Alvo", "Fonte do alvo", "DP", "Fonte do DP"]):
+            h_.caption(txt_)
+        missing_src = []
+        for r_ in strata:
+            if r_["lim"] is None:
+                continue
+            kb = f"{strat}|{r_['label']}"
+            row = st.columns([1.7, 1, 2, 1, 2], vertical_alignment="center")
+            mark = f'<span style="color:{r_["color"]};font-size:1.1em">■</span> ' if r_["color"] else ""
+            row[0].markdown(f"{mark}{r_['label']}", unsafe_allow_html=True)
+            a_val, d_val = r_["auto_alvo"], r_["auto_dp"]
+            if tgt_manual:
+                k_ = f"alvo_estrato|{kb}"
+                if k_ not in st.session_state:
+                    st.session_state[k_] = round(r_["auto_alvo"], 4)
+                a_val = row[1].number_input(f"Alvo · {r_['label']}", format="%.4f", key=k_,
+                                            label_visibility="collapsed")
+                f_ = row[2].text_input(f"Fonte do alvo · {r_['label']}", key=f"fonte_alvo_estrato|{kb}",
+                                       placeholder="ex.: perfil feminino no Lab Operations",
+                                       label_visibility="collapsed").strip()
+                r_["src_alvo"] = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+                if not f_:
+                    missing_src.append(f"alvo de {r_['label']}")
+            else:
+                row[1].write(fmt(a_val, 4))
+                row[2].caption("Média dos blocos plotados")
+            if sd_manual:
+                k_ = f"dp_estrato|{kb}"
+                if k_ not in st.session_state:
+                    st.session_state[k_] = round(r_["auto_dp"], 4)
+                d_val = row[3].number_input(f"DP · {r_['label']}", min_value=0.0, format="%.4f", key=k_,
+                                            label_visibility="collapsed")
+                f_ = row[4].text_input(f"Fonte do DP · {r_['label']}", key=f"fonte_dp_estrato|{kb}",
+                                       placeholder="ex.: DP da série histórica do estrato",
+                                       label_visibility="collapsed").strip()
+                r_["src_dp"] = f"Manual: {f_}" if f_ else "Manual (fonte não informada)"
+                if not f_:
+                    missing_src.append(f"DP de {r_['label']}")
+            else:
+                row[3].write(fmt(d_val, 4))
+                row[4].caption("DP dos blocos plotados")
+            cfg_r = replace(cfg, target=a_val if tgt_manual else None,
+                            sd=d_val if (sd_manual and d_val > 0) else None)
+            r_["lim"] = mm.control_limits(r_["ser"], cfg_r)
+            r_["fa"] = mm.false_alarm_summary(r_["ser"], r_["lim"], cfg_r, r_["n_stream"])
+        st.caption("Os valores começam com a média/DP dos blocos de cada estrato; troque pelos valores cadastrados "
+                   "em cada perfil. Os cartões, o gráfico, a tabela de comparação e o PDF passam a usar esses valores. "
+                   "A linha Geral continua calculada pelos blocos.")
+        if missing_src:
+            st.warning("Informe a fonte de: " + ", ".join(missing_src) + ". Ela vai para o relatório em PDF.")
+
     def metric_row(r_: dict):
         cm = st.columns(7)
         cm[0].metric(f"Elegíveis (de {fmt(r_['n'], 0)})", fmt(r_["n_elig"], 0))
-        cm[1].metric("Fora do truncamento", f"{fmt(r_['n_trunc'], 0)} ({100 * r_['n_trunc'] / max(r_['n_pop'], 1):.1f}%)")
+        cm[1].metric("Fora do truncamento", f"{fmt(100 * r_['n_trunc'] / max(r_['n_pop'], 1), 1)}%",
+                     help=f"{fmt(r_['n_trunc'], 0)} resultados fora dos limites de truncamento")
         v_ = r_["vol"]
         cm[2].metric("Elegíveis / dia", fmt(v_["mean"], 1) if v_ else "—",
                      help=(f"Média de resultados dentro do truncamento por dia com resultado. Mediana {fmt(v_['med'], 0)}, "
@@ -695,8 +769,6 @@ with tab2:
         for r_ in strata:
             row_label(r_["label"], r_["color"])
             metric_row(r_)
-    if strata and (tgt_manual or sd_manual):
-        st.caption("Alvo/DP manuais são aplicados igualmente a todos os estratos.")
     if not (tgt_manual or sd_manual):
         st.caption("Alvo e DP calculados dos próprios blocos plotados (dentro da amostra): com k=2 cerca de 5% dos "
                    "pontos ficam fora por construção. Para avaliar limites já em uso no Lab Operations, use valores manuais.")
@@ -925,6 +997,7 @@ with tab2:
              "Mesmo lado do alvo" if cfg.consec > 1 else "—"],
         ]
         lim_eq = None
+        fontes_eq = None
         x_is_time = has_time
         if strata:
             lim_eq = pd.DataFrame([{
@@ -947,8 +1020,11 @@ with tab2:
             else:
                 paineis = None
                 itens = [pdf_item(r_) for r_ in ok_strata]
-            fig_note = ("Cada estrato com fluxo, alvo e DP próprios" if not (tgt_manual or sd_manual)
-                        else "Alvo/DP manuais aplicados a todos os estratos")
+            fig_note = ("Cada estrato com fluxo, alvo e DP próprios" + ("" if not (tgt_manual or sd_manual)
+                        else "; alvo/DP de cada estrato conforme a tabela de fontes"))
+            fontes_eq = (pd.DataFrame([{"Estrato": r_["label"], "Fonte do alvo": r_["src_alvo"],
+                                        "Fonte do DP": r_["src_dp"]} for r_ in ok_strata])
+                         if (tgt_manual or sd_manual) else None)
         else:
             paineis = None
             itens = [{"nome": stat_lab, "x": ser["t"] if x_is_time else ser["seq"], "y": ser["valor"], "lim": lim,
@@ -975,7 +1051,7 @@ with tab2:
                               ("Período dos dados", period), ("Resultados avaliados", fmt(len(data2), 0)),
                               ("Arquivo de origem", f"{up.name}" + (f" (aba {sheet})" if sheet else ""))],
             "preparo": prep_rows, "idade": age_info,
-            "config": cfg_rows, "limites": lim_rows, "limites_equip": lim_eq,
+            "config": cfg_rows, "limites": lim_rows, "limites_equip": lim_eq, "fontes_estrato": fontes_eq,
             "serie": {"itens": itens, "paineis": paineis, "x_is_time": x_is_time, "ylabel": stat_lab.split(" (")[0].lower(),
                       "legenda": f"Figura {2 if age_info else 1} – {stat_lab} {N}-{step} calculada sobre os dados do "
                                  f"período, com alvo (pontilhado) e limites LI/LS (tracejado). {fig_note}."},

@@ -29,7 +29,7 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 - Estatística: média móvel, mediana móvel, média móvel ponderada (pesos lineares, o mais recente pesa N) e EWMA (λ padrão = 2/(N+1)).
 - Bloco **N-n**: bloco de N resultados elegíveis, novo ponto a cada n resultados.
 - Limites alvo ± k·DP (alvo/DP da própria série ou manuais, como no Lab Operations); regra de pontos consecutivos.
-- Média-alvo e DP: média/DP dos blocos plotados ou manuais (com campo de fonte).
+- Média-alvo e DP: média/DP dos blocos plotados ou manuais (com campo de fonte). Com estratificação, os valores manuais são informados por estrato (ex.: um alvo e um DP para cada sexo, como cada perfil do Lab Operations), e cartões, gráfico, tabela e PDF usam os limites de cada estrato.
 - Gráfico com alarmes, taxa de falso alarme (% pontos, episódios, episódios/dia).
 - "Estratificar por" (nenhuma, equipamento, sexo, equipamento e sexo): cada estrato com fluxo, alvo e DP próprios, como cada perfil do Lab Operations. Cartões de métricas por estrato (em abas por equipamento no modo equipamento e sexo), gráfico com uma cor por estrato (um painel por sexo no modo combinado), tabela de comparação e volume diário.
 - "Elegíveis / dia": resultados dentro do truncamento e da população por dia com resultado, com o tempo aproximado para renovar um bloco de N (alerta acima de 48 h).
@@ -47,3 +47,4 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 - `app.py`: interface
 - `mm_core.py`: cálculos (sem dependência do Streamlit, reutilizável em scripts)
 - `report.py`: geração do relatório PDF (reportlab + matplotlib)
+- `assets/`: símbolo (`pbrtqc_symbol.svg`, `pbrtqc_symbol_512.png`) e favicon (`pbrtqc_favicon.svg`, `pbrtqc_favicon.png`)
