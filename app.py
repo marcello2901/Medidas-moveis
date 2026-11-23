@@ -142,7 +142,7 @@ def cached_aon(b: bytes, name: str):
 def render_aon_review() -> None:
     st.markdown(
         "Use esta aba para **revisar uma média móvel já cadastrada**. Envie aqui a exportação dos resultados "
-        "do software"
+        "do software."
     )
     upa = st.file_uploader("Exportação dos resultados AON (xlsx, xls ou csv)",
                            type=["xlsx", "xlsm", "xls", "csv", "txt"], key="aon_upload")
