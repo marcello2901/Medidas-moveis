@@ -512,4 +512,84 @@ def config_table(cfg: MMConfig, lim: dict, extra: dict | None = None) -> pd.Data
     return pd.DataFrame({"parâmetro": list(d.keys()), "valor": [str(v) for v in d.values()]})
 
 
+# =============================================================================
+# Revisão de média móvel cadastrada (exportação de resultados AON do middleware)
+# =============================================================================
+AON_COLS = {  # nome padronizado -> nomes aceitos na exportação (comparação sem maiúsculas/espaços)
+    "instrument": ["instrument", "instrumento", "equipamento"],
+    "date": ["date", "data"],
+    "value": ["aon results", "aon result", "resultado aon", "média móvel", "media movel"],
+    "test": ["test", "teste"],
+    "status": ["aon status", "status aon"],
+    "target": ["target value", "valor alvo", "alvo"],
+    "target_sd": ["target sd", "dp alvo"],
+    "range": ["range"],
+    "profile": ["aon profile", "perfil aon", "perfil"],
+    "method": ["calculation method"],
+    "review": ["review status"],
+    "usage": ["result usage"],
+}
+
+
+def _find_col(cols: list[str], names: list[str]) -> str | None:
+    low = {c.strip().lower(): c for c in cols}
+    for n in names:
+        if n in low:
+            return low[n]
+    return None
+
+
+def read_aon_workbook(file_bytes: bytes, name: str) -> tuple[pd.DataFrame, dict]:
+    """Lê a exportação de resultados AON em qualquer dos dois formatos:
+    uma aba por equipamento ou todos os equipamentos numa aba só.
+    Usa toda aba que tenha as colunas Instrument, Date e AON results; ignora as demais (ex.: resumos)."""
+    if name.lower().endswith((".xlsx", ".xlsm", ".xls")):
+        sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None)
+    else:
+        sheets = {"(arquivo)": read_table(file_bytes, name)}
+    frames, used, skipped = [], [], []
+    for sh, df in sheets.items():
+        df.columns = [str(c) for c in df.columns]
+        m = {k: _find_col(list(df.columns), v) for k, v in AON_COLS.items()}
+        if not (m["instrument"] and m["date"] and m["value"]):
+            skipped.append(sh)
+            continue
+        out = pd.DataFrame({k: (df[c] if c else pd.NA) for k, c in m.items()})
+        out["value"] = parse_numeric(out["value"])
+        for k in ("target", "target_sd", "range"):
+            out[k] = parse_numeric(out[k]) if m[k] else np.nan
+        out["date"] = pd.to_datetime(out["date"], errors="coerce", dayfirst=True, format="mixed")
+        out["instrument"] = out["instrument"].astype("string").str.strip()
+        out["aba"] = sh
+        out = out[out["instrument"].notna() & out["value"].notna()]
+        frames.append(out)
+        used.append(sh)
+    if not frames:
+        raise ValueError("Nenhuma aba tem as colunas Instrument, Date e AON results.")
+    data = pd.concat(frames, ignore_index=True)
+    # equipamento = parte do nome antes de " - " (ex.: "IMUNO_1(PRO_QUADRUPLO)"); módulo = nome completo
+    data["analyzer"] = data["instrument"].str.split(" - ").str[0].str.strip()
+    info = {"abas_usadas": used, "abas_ignoradas": skipped,
+            "formato": "uma aba por equipamento" if len(used) > 1 else "todos os equipamentos em uma aba"}
+    return data, info
+
+
+def aon_summary(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Igual à aba "Resumo AON": N, média e DP amostral por instrumento (módulo);
+    média das médias e média dos DPs ponderadas pelo N."""
+    g = data.groupby(["aba", "instrument"], sort=True)["value"]
+    tab = pd.DataFrame({"N": g.size(), "Média AON": g.mean(), "DP amostral": g.std(ddof=1)}).reset_index()
+    tab = tab.rename(columns={"aba": "Aba de origem", "instrument": "Instrument"})
+    n = tab["N"].to_numpy(float)
+    has_sd = tab["DP amostral"].notna().to_numpy()
+    res = {
+        "n_total": int(n.sum()),
+        "media_ponderada": float((n * tab["Média AON"]).sum() / n.sum()) if n.sum() else np.nan,
+        # instrumentos com 1 ponto não têm DP: ficam fora da ponderação do DP
+        "dp_ponderado": float((n[has_sd] * tab.loc[has_sd, "DP amostral"]).sum() / n[has_sd].sum())
+        if has_sd.any() else np.nan,
+    }
+    return tab, res
+
+
 __all__ = [n for n in dir() if not n.startswith("_")] + ["replace"]

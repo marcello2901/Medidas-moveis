@@ -131,6 +131,96 @@ def fmt(x, nd=3):
     return f"{x:,.{nd}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+# =============================================================================
+# Aba 5 — revisão de média móvel cadastrada (independente da planilha da barra lateral)
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def cached_aon(b: bytes, name: str):
+    return mm.read_aon_workbook(b, name)
+
+
+def render_aon_review() -> None:
+    st.markdown(
+        "Use esta aba para **revisar uma média móvel já cadastrada**. Envie aqui a exportação dos resultados "
+        "AON do middleware (colunas *Instrument*, *Date* e *AON results*), em um dos dois formatos: **uma aba por "
+        "equipamento** ou **todos os equipamentos em uma aba só**. Abas sem essas colunas (como resumos) são ignoradas. "
+        "Esta aba não usa a planilha da barra lateral."
+    )
+    upa = st.file_uploader("Exportação dos resultados AON (xlsx, xls ou csv)",
+                           type=["xlsx", "xlsm", "xls", "csv", "txt"], key="aon_upload")
+    if upa is None:
+        st.info("Envie a exportação dos resultados AON para calcular as medidas ponderadas.")
+        return
+    try:
+        d, info = cached_aon(upa.getvalue(), upa.name)
+    except ValueError as e:
+        st.error(str(e))
+        return
+    st.caption(f"Formato detectado: **{info['formato']}** · abas usadas: {', '.join(map(str, info['abas_usadas']))}"
+               + (f" · ignoradas: {', '.join(map(str, info['abas_ignoradas']))}" if info["abas_ignoradas"] else ""))
+
+    # ---- filtros: teste, perfil, equipamentos e período
+    c1, c2, c3 = st.columns(3)
+    tests = sorted(d["test"].dropna().astype(str).unique())
+    if len(tests) > 1:
+        d = d[d["test"].astype(str) == c1.selectbox("Teste", tests, key="aon_test")]
+    profiles = sorted(d["profile"].dropna().astype(str).unique())
+    if len(profiles) > 1:
+        d = d[d["profile"].astype(str) == c2.selectbox("Perfil AON", profiles, key="aon_profile")]
+    analyzers = sorted(d["analyzer"].dropna().unique())
+    sel_an = c3.multiselect("Equipamentos", analyzers, default=analyzers, key="aon_analyzers")
+    d = d[d["analyzer"].isin(sel_an)]
+    if d["date"].notna().any():
+        dmin, dmax = d["date"].min().date(), d["date"].max().date()
+        per = st.date_input("Período", (dmin, dmax), min_value=dmin, max_value=dmax, format="DD/MM/YYYY",
+                            key=f"aon_period|{upa.name}|{dmin}|{dmax}")
+        if isinstance(per, (list, tuple)) and len(per) == 2:
+            d = d[(d["date"].dt.date >= per[0]) & (d["date"].dt.date <= per[1])]
+    if d.empty:
+        st.warning("Nenhum resultado AON com esses filtros.")
+        return
+
+    tab, res = mm.aon_summary(d)
+    if len(info["abas_usadas"]) == 1:  # aba única: mostra o equipamento no lugar da aba de origem
+        tab["Aba de origem"] = tab["Instrument"].str.split(" - ").str[0].str.strip()
+        tab = tab.rename(columns={"Aba de origem": "Equipamento"})
+
+    st.subheader("Resumo estatístico dos resultados AON")
+    m = st.columns(5)
+    m[0].metric("Pontos AON", fmt(res["n_total"], 0))
+    m[1].metric("Média ponderada das médias", fmt(res["media_ponderada"], 4))
+    m[2].metric("Média ponderada dos DPs", fmt(res["dp_ponderado"], 4))
+    if d["date"].notna().any():
+        m[3].metric("Início", f"{d['date'].min():%d/%m/%y}", help=f"{d['date'].min():%d/%m/%Y %H:%M}")
+        m[4].metric("Fim", f"{d['date'].max():%d/%m/%y}", help=f"{d['date'].max():%d/%m/%Y %H:%M}")
+    cad = []
+    for col_, lab_ in (("profile", "perfil"), ("target", "alvo"), ("target_sd", "DP")):
+        vals = d[col_].dropna().unique()
+        if len(vals):
+            cad.append(f"{lab_} " + " / ".join(fmt(v, 2) if isinstance(v, (int, float, np.floating)) else str(v)
+                                               for v in vals[:4]))
+    if cad:
+        st.caption("Cadastrado no middleware neste período: " + " · ".join(cad) + ".")
+
+    st.dataframe(tab.round(4), hide_index=True, width="stretch")
+    st.caption("Média ponderada das médias = Σ(N × média) / ΣN, que equivale à média de todos os pontos AON do período. "
+               "Média ponderada dos DPs = Σ(N × DP) / ΣN. Nota: o DP ponderado é a média aritmética dos DPs dos "
+               "instrumentos, ponderada por N; não é o DP combinado (pooled). Instrumentos com um único ponto não "
+               "têm DP e ficam fora dessa ponderação.")
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        tab.to_excel(xw, sheet_name="Resumo AON", index=False)
+        pd.DataFrame({"medida": ["Pontos AON", "Média ponderada das médias AON", "Média ponderada dos DPs",
+                                 "Início", "Fim", "Arquivo"],
+                      "valor": [res["n_total"], res["media_ponderada"], res["dp_ponderado"],
+                                d["date"].min(), d["date"].max(), upa.name]}
+                     ).to_excel(xw, sheet_name="Ponderados", index=False)
+    st.download_button("Baixar resumo (.xlsx)", buf.getvalue(),
+                       file_name=f"Resumo AON {upa.name.rsplit('.', 1)[0]}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @st.cache_data(show_spinner=False)
 def cached_read(b: bytes, name: str, sheet: str | None):
     return mm.read_table(b, name, sheet)
@@ -175,9 +265,16 @@ up = st.sidebar.file_uploader("Planilha (xlsx, xls ou csv)", type=["xlsx", "xlsm
 
 app_header()
 if up is None:
-    st.info("Envie a planilha na barra lateral. Ela precisa ter, no mínimo, uma coluna de **resultado** e "
-            "uma de **data/hora** (a ordem cronológica é essencial para simular a medida móvel). "
-            "Idade, sexo, equipamento e teste são opcionais.")
+    _tabs = st.tabs(["1 · Estatística descritiva", "2 · Preparo dos dados",
+                                  "3 · Configuração da ferramenta", "4 · Simulação de bias",
+                                  "5 · Revisão de média móvel cadastrada"])
+    for _t in _tabs[:4]:
+        _t.info("Envie a planilha de resultados de pacientes na barra lateral. Ela precisa ter, no mínimo, uma "
+                "coluna de **resultado** e uma de **data/hora** (a ordem cronológica é essencial para simular a "
+                "medida móvel). Idade, sexo, equipamento e teste são opcionais. Para revisar uma média móvel já "
+                "cadastrada, use a aba 5.")
+    with _tabs[4]:
+        render_aon_review()
     st.stop()
 
 fbytes = up.getvalue()
@@ -252,8 +349,11 @@ with st.sidebar.expander("Resumo da leitura", expanded=False):
 if not has_time:
     st.warning("Sem coluna de data: a ordem das linhas da planilha será tomada como ordem cronológica.")
 
-tab0, tab1, tab2, tab3 = st.tabs(["1 · Estatística descritiva", "2 · Preparo dos dados",
-                                  "3 · Configuração da ferramenta", "4 · Simulação de bias"])
+tab0, tab1, tab2, tab3, tab4 = st.tabs(["1 · Estatística descritiva", "2 · Preparo dos dados",
+                                  "3 · Configuração da ferramenta", "4 · Simulação de bias",
+                                  "5 · Revisão de média móvel cadastrada"])
+with tab4:  # renderizada primeiro: um st.stop() nas abas 1–4 não pode impedir a revisão
+    render_aon_review()
 
 # =============================================================================
 # Etapa 1 — estatística descritiva
