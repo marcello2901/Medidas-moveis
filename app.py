@@ -144,10 +144,10 @@ def render_aon_review() -> None:
         "Use esta aba para **revisar uma média móvel já cadastrada**. Envie aqui a exportação dos resultados "
         "do software."
     )
-    upa = st.file_uploader("Exportação dos resultados AON (xlsx, xls ou csv)",
+    upa = st.file_uploader("Exportação dos resultados (xlsx, xls ou csv)",
                            type=["xlsx", "xlsm", "xls", "csv", "txt"], key="aon_upload")
     if upa is None:
-        st.info("Envie a exportação dos resultados AON para calcular as medidas ponderadas.")
+        st.info("Envie a exportação dos resultados para calcular as medidas ponderadas.")
         return
     try:
         d, info = cached_aon(upa.getvalue(), upa.name)
@@ -164,7 +164,7 @@ def render_aon_review() -> None:
         d = d[d["test"].astype(str) == c1.selectbox("Teste", tests, key="aon_test")]
     profiles = sorted(d["profile"].dropna().astype(str).unique())
     if len(profiles) > 1:
-        d = d[d["profile"].astype(str) == c2.selectbox("Perfil AON", profiles, key="aon_profile")]
+        d = d[d["profile"].astype(str) == c2.selectbox("Perfil", profiles, key="aon_profile")]
     analyzers = sorted(d["analyzer"].dropna().unique())
     sel_an = c3.multiselect("Equipamentos", analyzers, default=analyzers, key="aon_analyzers")
     d = d[d["analyzer"].isin(sel_an)]
@@ -175,7 +175,7 @@ def render_aon_review() -> None:
         if isinstance(per, (list, tuple)) and len(per) == 2:
             d = d[(d["date"].dt.date >= per[0]) & (d["date"].dt.date <= per[1])]
     if d.empty:
-        st.warning("Nenhum resultado AON com esses filtros.")
+        st.warning("Nenhum resultado com esses filtros.")
         return
 
     tab, res = mm.aon_summary(d)
@@ -183,9 +183,9 @@ def render_aon_review() -> None:
         tab["Aba de origem"] = tab["Instrument"].str.split(" - ").str[0].str.strip()
         tab = tab.rename(columns={"Aba de origem": "Equipamento"})
 
-    st.subheader("Resumo estatístico dos resultados AON")
+    st.subheader("Resumo estatístico dos resultados")
     m = st.columns(5)
-    m[0].metric("Pontos AON", fmt(res["n_total"], 0))
+    m[0].metric("Pontos", fmt(res["n_total"], 0))
     m[1].metric("Média ponderada das médias", fmt(res["media_ponderada"], 4))
     m[2].metric("Média ponderada dos DPs", fmt(res["dp_ponderado"], 4))
     if d["date"].notna().any():
@@ -208,14 +208,14 @@ def render_aon_review() -> None:
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        tab.to_excel(xw, sheet_name="Resumo AON", index=False)
-        pd.DataFrame({"medida": ["Pontos AON", "Média ponderada das médias AON", "Média ponderada dos DPs",
+        tab.to_excel(xw, sheet_name="Resumo", index=False)
+        pd.DataFrame({"medida": ["Pontos", "Média ponderada das médias", "Média ponderada dos DPs",
                                  "Início", "Fim", "Arquivo"],
                       "valor": [res["n_total"], res["media_ponderada"], res["dp_ponderado"],
                                 d["date"].min(), d["date"].max(), upa.name]}
                      ).to_excel(xw, sheet_name="Ponderados", index=False)
     st.download_button("Baixar resumo (.xlsx)", buf.getvalue(),
-                       file_name=f"Resumo AON {upa.name.rsplit('.', 1)[0]}.xlsx",
+                       file_name=f"Resumo {upa.name.rsplit('.', 1)[0]}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
