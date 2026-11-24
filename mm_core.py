@@ -539,6 +539,14 @@ def _find_col(cols: list[str], names: list[str]) -> str | None:
     return None
 
 
+def platform_name(instrument: pd.Series) -> pd.Series:
+    """Plataforma = nome antes do primeiro parêntese: "IMUNO_1(PRO_QUADRUPLO) - CobasPro_1-1-1" → "IMUNO_1",
+    "BIOQ_4(COBAS_8K_C702_DUPLO) MU1-ISE-1-1 - Laboratory 1" → "BIOQ_4". Sem parêntese: texto antes de " - "."""
+    s = instrument.astype("string").str.strip()
+    head = s.str.extract(r"^([^()]+?)\s*\(", expand=False)
+    return head.fillna(s.str.split(" - ").str[0]).str.strip()
+
+
 def read_aon_workbook(file_bytes: bytes, name: str) -> tuple[pd.DataFrame, dict]:
     """Lê a exportação de resultados AON em qualquer dos dois formatos:
     uma aba por equipamento ou todos os equipamentos numa aba só.
@@ -565,26 +573,49 @@ def read_aon_workbook(file_bytes: bytes, name: str) -> tuple[pd.DataFrame, dict]
         frames.append(out)
         used.append(sh)
     if not frames:
-        raise ValueError("Nenhuma aba tem as colunas Instrument, Date e AON results.")
+        raise ValueError("Nenhuma aba tem as colunas de instrumento (Instrument), data (Date) e resultado da "
+                         "média móvel exportados pelo software.")
     data = pd.concat(frames, ignore_index=True)
-    # equipamento = parte do nome antes de " - " (ex.: "IMUNO_1(PRO_QUADRUPLO)"); módulo = nome completo
-    data["analyzer"] = data["instrument"].str.split(" - ").str[0].str.strip()
+    # plataforma = nome antes do parêntese (ex.: "IMUNO_1", "BIOQ_4"); instrumento/módulo = nome completo
+    data["analyzer"] = platform_name(data["instrument"])
     info = {"abas_usadas": used, "abas_ignoradas": skipped,
             "formato": "uma aba por equipamento" if len(used) > 1 else "todos os equipamentos em uma aba"}
     return data, info
+
+
+def aon_by_analyzer(tab: pd.DataFrame, data: pd.DataFrame) -> pd.DataFrame:
+    """Agrega os instrumentos (módulos) de cada equipamento com a mesma regra do resumo geral:
+    média e DP ponderados pelo N de cada módulo."""
+    t = tab.copy()
+    t["equipamento"] = platform_name(t["Instrument"])
+    rows = []
+    for eq, g in t.groupby("equipamento", sort=True):
+        n = g["N"].to_numpy(float)
+        sd_ok = g["DP amostral"].notna().to_numpy()
+        rows.append({
+            "Plataforma": eq, "Módulos": len(g), "N": int(n.sum()),
+            "Média ponderada": float((n * g["Média"]).sum() / n.sum()),
+            "DP ponderado": float((n[sd_ok] * g.loc[sd_ok, "DP amostral"]).sum() / n[sd_ok].sum()) if sd_ok.any() else np.nan,
+        })
+    out = pd.DataFrame(rows)
+    # período coberto por equipamento (a exportação pode cortar cada equipamento num ponto diferente)
+    per = data.groupby("analyzer")["date"].agg(["min", "max"])
+    out["Início"] = out["Plataforma"].map(per["min"])
+    out["Fim"] = out["Plataforma"].map(per["max"])
+    return out
 
 
 def aon_summary(data: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Igual à aba "Resumo AON": N, média e DP amostral por instrumento (módulo);
     média das médias e média dos DPs ponderadas pelo N."""
     g = data.groupby(["aba", "instrument"], sort=True)["value"]
-    tab = pd.DataFrame({"N": g.size(), "Média AON": g.mean(), "DP amostral": g.std(ddof=1)}).reset_index()
+    tab = pd.DataFrame({"N": g.size(), "Média": g.mean(), "DP amostral": g.std(ddof=1)}).reset_index()
     tab = tab.rename(columns={"aba": "Aba de origem", "instrument": "Instrument"})
     n = tab["N"].to_numpy(float)
     has_sd = tab["DP amostral"].notna().to_numpy()
     res = {
         "n_total": int(n.sum()),
-        "media_ponderada": float((n * tab["Média AON"]).sum() / n.sum()) if n.sum() else np.nan,
+        "media_ponderada": float((n * tab["Média"]).sum() / n.sum()) if n.sum() else np.nan,
         # instrumentos com 1 ponto não têm DP: ficam fora da ponderação do DP
         "dp_ponderado": float((n[has_sd] * tab.loc[has_sd, "DP amostral"]).sum() / n[has_sd].sum())
         if has_sd.any() else np.nan,
