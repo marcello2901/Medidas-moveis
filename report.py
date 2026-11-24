@@ -220,8 +220,8 @@ def signature_block(roles: list[str], names: dict[str, str]) -> Table:
 
 
 # ---------------------------------------------------------------- documento
-def build_pdf(info: dict) -> bytes:
-    buf = io.BytesIO()
+def _new_doc(buf, info: dict) -> BaseDocTemplate:
+    """Documento A4 com faixa de título na 1ª página, cabeçalho nas demais e rodapé com data e página."""
     emitted: datetime = info.get("emitido") or datetime.now()
     header_right = " · ".join(v for v in [info.get("analito"), info.get("equip_curto")] if v)
 
@@ -268,17 +268,35 @@ def build_pdf(info: dict) -> bytes:
     doc.addPageTemplates([PageTemplate("first", [frame_first], onPage=on_first),
                           PageTemplate("rest", [frame_rest], onPage=on_page)])
 
-    from reportlab.platypus import NextPageTemplate
-    el = [NextPageTemplate("rest")]
-    el += [Paragraph(info["titulo"], ST["title"]), Spacer(1, 4),
-           Paragraph(info.get("subtitulo", ""), ST["subtitle"]), Spacer(1, 1.15 * cm)]
+    return doc
 
-    sec = 0
+
+def _start(info: dict):
+    """Elementos iniciais (título e subtítulo na faixa) e numerador de seções."""
+    from reportlab.platypus import NextPageTemplate
+    el = [NextPageTemplate("rest"), Paragraph(info["titulo"], ST["title"]), Spacer(1, 4),
+          Paragraph(info.get("subtitulo", ""), ST["subtitle"]), Spacer(1, 1.15 * cm)]
+    counter = {"n": 0}
 
     def h1(text):
-        nonlocal sec
-        sec += 1
-        return Paragraph(f'<font color="#2a78d6">{sec}.</font>&nbsp;&nbsp;{text}', ST["h1"])
+        counter["n"] += 1
+        return Paragraph(f'<font color="#2a78d6">{counter["n"]}.</font>&nbsp;&nbsp;{text}', ST["h1"])
+    return el, h1
+
+
+def _closing(info: dict, h1) -> KeepTogether:
+    obs = (info.get("observacoes") or "").strip()
+    closing = [h1("Observações e responsável" if obs else "Responsável")]
+    if obs:
+        closing += [Paragraph(obs.replace("\n", "<br/>"), ST["body"]), Spacer(1, 14)]
+    closing += [Spacer(1, 4), signature_block(["Elaborado por"], {"Elaborado por": info.get("elaborado", "")})]
+    return KeepTogether(closing)
+
+
+def build_pdf(info: dict) -> bytes:
+    buf = io.BytesIO()
+    doc = _new_doc(buf, info)
+    el, h1 = _start(info)
 
     # 1. Identificação
     el += [h1("Identificação do estudo"), kv_grid(info["identificacao"], cols=3)]
@@ -314,13 +332,37 @@ def build_pdf(info: dict) -> bytes:
         el.append(KeepTogether([h1("Medida móvel simulada no período"), series_chart(info["serie"]),
                                 Paragraph(info["serie"].get("legenda", ""), ST["caption"])]))
 
-    # Observações e assinaturas
-    obs = (info.get("observacoes") or "").strip()
-    closing = [h1("Observações e responsável" if obs else "Responsável")]
-    if obs:
-        closing += [Paragraph(obs.replace("\n", "<br/>"), ST["body"]), Spacer(1, 14)]
-    closing += [Spacer(1, 4), signature_block(["Elaborado por"], {"Elaborado por": info.get("elaborado", "")})]
-    el.append(KeepTogether(closing))
+    # Observações e assinatura
+    el.append(_closing(info, h1))
+    doc.build(el)
+    return buf.getvalue()
 
+
+def build_review_pdf(info: dict) -> bytes:
+    """Relatório da revisão de uma média móvel cadastrada (resumo ponderado do período)."""
+    buf = io.BytesIO()
+    doc = _new_doc(buf, info)
+    el, h1 = _start(info)
+
+    el += [h1("Identificação da revisão"), kv_grid(info["identificacao"], cols=3)]
+
+    if info.get("cadastro"):
+        el.append(KeepTogether([h1("Parâmetros cadastrados no middleware"),
+                                data_table(["Parâmetro", "Valor", "Observação"], info["cadastro"], [0.28, 0.27, 0.45])]))
+
+    el.append(KeepTogether([h1("Resumo ponderado do período"),
+                            data_table(["Medida", "Valor", "Cálculo"], info["resumo"], [0.32, 0.16, 0.52]),
+                            Paragraph(info.get("nota_resumo", ""), ST["caption"])]))
+
+    df = info["plataformas"]
+    el.append(KeepTogether([h1("Por plataforma"),
+                            data_table(list(df.columns), df.values.tolist(),
+                                       [0.15, 0.13, 0.08, 0.14, 0.13, 0.185, 0.185])]))
+
+    df = info["instrumentos"]
+    widths = [0.14, 0.44, 0.10, 0.16, 0.16] if len(df.columns) == 5 else [0.56, 0.12, 0.16, 0.16]
+    el += [h1("Por instrumento"), data_table(list(df.columns), df.values.tolist(), widths)]
+
+    el.append(_closing(info, h1))
     doc.build(el)
     return buf.getvalue()

@@ -46,7 +46,7 @@ Idade aceita `11M` (meses), `15D` (dias) e `2A`. Resultados com vírgula decimal
 **5 · Revisão de média móvel cadastrada**
 - Independente da planilha da barra lateral: recebe a exportação dos resultados AON do middleware (Instrument, Date, AON results), com uma aba por equipamento ou todos os equipamentos numa aba só (abas sem essas colunas são ignoradas).
 - Filtros de teste, perfil, equipamentos e período.
-- Reproduz a aba "Resumo AON": N, média e DP amostral por instrumento; média das médias e média dos DPs ponderadas por N. Mostra o alvo e o DP cadastrados no período e exporta o resumo em .xlsx.
+- Reproduz a aba "Resumo AON": N, média e DP amostral por instrumento; média das médias e média dos DPs ponderadas por N. Também agrega por plataforma (nome antes do parêntese, ex.: IMUNO_1, BIOQ_1), com o período coberto por cada uma. Mostra o alvo e o DP cadastrados no período, exporta o resumo em .xlsx e gera um relatório PDF da revisão (parâmetros cadastrados, resumo ponderado, tabelas por plataforma e por instrumento, observações e assinatura).
 
 ## Arquivos
 - `app.py`: interface

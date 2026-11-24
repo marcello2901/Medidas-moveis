@@ -166,7 +166,7 @@ def render_aon_review() -> None:
     if len(profiles) > 1:
         d = d[d["profile"].astype(str) == c2.selectbox("Perfil", profiles, key="aon_profile")]
     analyzers = sorted(d["analyzer"].dropna().unique())
-    sel_an = c3.multiselect("Equipamentos", analyzers, default=analyzers, key="aon_analyzers")
+    sel_an = c3.multiselect("Plataformas", analyzers, default=analyzers, key="aon_analyzers")
     d = d[d["analyzer"].isin(sel_an)]
     if d["date"].notna().any():
         dmin, dmax = d["date"].min().date(), d["date"].max().date()
@@ -179,9 +179,9 @@ def render_aon_review() -> None:
         return
 
     tab, res = mm.aon_summary(d)
-    if len(info["abas_usadas"]) == 1:  # aba única: mostra o equipamento no lugar da aba de origem
-        tab["Aba de origem"] = tab["Instrument"].str.split(" - ").str[0].str.strip()
-        tab = tab.rename(columns={"Aba de origem": "Equipamento"})
+    if len(info["abas_usadas"]) == 1:  # aba única: mostra a plataforma no lugar da aba de origem
+        tab["Aba de origem"] = mm.platform_name(tab["Instrument"])
+        tab = tab.rename(columns={"Aba de origem": "Plataforma"})
 
     st.subheader("Resumo estatístico dos resultados")
     m = st.columns(5)
@@ -200,8 +200,18 @@ def render_aon_review() -> None:
     if cad:
         st.caption("Cadastrado no middleware neste período: " + " · ".join(cad) + ".")
 
+    eq_tab = mm.aon_by_analyzer(tab, d)
+    st.markdown("**Por plataforma**")
+    st.dataframe(eq_tab.round({"Média ponderada": 4, "DP ponderado": 4}), hide_index=True, width="stretch",
+                 column_config={"Início": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm"),
+                                "Fim": st.column_config.DatetimeColumn(format="DD/MM/YYYY HH:mm")})
+    st.caption("Plataforma = nome antes do parêntese (ex.: IMUNO_1, BIOQ_1), reunindo todos os instrumentos "
+               "dela. Média e DP ponderados pelo N de cada instrumento (mesma regra do resumo geral). Confira Início e "
+               "Fim: se a exportação corta cada plataforma num ponto diferente, elas não cobrem o mesmo período.")
+
+    st.markdown("**Por instrumento (módulo)**")
     st.dataframe(tab.round(4), hide_index=True, width="stretch")
-    st.caption("Média ponderada das médias = Σ(N × média) / ΣN, que equivale à média de todos os pontos AON do período. "
+    st.caption("Média ponderada das médias = Σ(N × média) / ΣN, que equivale à média de todos os pontos do período. "
                "Média ponderada dos DPs = Σ(N × DP) / ΣN. Nota: o DP ponderado é a média aritmética dos DPs dos "
                "instrumentos, ponderada por N; não é o DP combinado (pooled). Instrumentos com um único ponto não "
                "têm DP e ficam fora dessa ponderação.")
@@ -209,6 +219,7 @@ def render_aon_review() -> None:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         tab.to_excel(xw, sheet_name="Resumo", index=False)
+        eq_tab.to_excel(xw, sheet_name="Por plataforma", index=False)
         pd.DataFrame({"medida": ["Pontos", "Média ponderada das médias", "Média ponderada dos DPs",
                                  "Início", "Fim", "Arquivo"],
                       "valor": [res["n_total"], res["media_ponderada"], res["dp_ponderado"],
@@ -217,6 +228,79 @@ def render_aon_review() -> None:
     st.download_button("Baixar resumo (.xlsx)", buf.getvalue(),
                        file_name=f"Resumo {upa.name.rsplit('.', 1)[0]}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # ---- relatório PDF da revisão
+    st.subheader("Relatório em PDF")
+    st.caption("Documenta a revisão: parâmetros cadastrados, resumo ponderado do período, valores por plataforma "
+               "e por instrumento, com campo de assinatura.")
+
+    def uniq(col_):
+        return [v for v in d[col_].dropna().unique()]
+
+    def join_vals(vals, nd=2):
+        return " / ".join(fmt(v, nd) if isinstance(v, (int, float, np.floating)) else str(v) for v in vals) or "—"
+
+    tests_ = [str(v) for v in uniq("test")]
+    profiles_ = [str(v) for v in uniq("profile")]
+    with st.form("form_pdf_revisao"):
+        a_, b_ = st.columns(2)
+        rv_analito = a_.text_input("Analito", value=" / ".join(tests_) or upa.name.rsplit(".", 1)[0])
+        rv_setor = b_.text_input("Laboratório / setor")
+        a_, _ = st.columns(2)
+        rv_elab = a_.text_input("Elaborado por")
+        rv_obs = st.text_area("Observações / conclusão da revisão (opcional)", height=80)
+        rv_gen = st.form_submit_button("Gerar relatório PDF", type="primary")
+    if rv_gen:
+        t_vals, sd_vals, rg_vals = uniq("target"), uniq("target_sd"), uniq("range")
+        cadastro = [["Perfil", join_vals(profiles_), "Perfil configurado no middleware"],
+                    ["Método de cálculo", join_vals([str(v).replace("_", " ").capitalize() for v in uniq("method")]), "—"],
+                    ["Valor-alvo", join_vals(t_vals, 2), "—"],
+                    ["DP (Target SD / Range)", join_vals(rg_vals or sd_vals, 2), "Valor de 1 DP"]]
+        if len(t_vals) == 1 and len(rg_vals or sd_vals) == 1:
+            sd_ = float((rg_vals or sd_vals)[0])
+            cadastro.append(["Limites de controle", f"{fmt(t_vals[0] - 2 * sd_, 2)} a {fmt(t_vals[0] + 2 * sd_, 2)}",
+                             "Alvo ± 2 × DP"])
+        resumo = [["Pontos avaliados", fmt(res["n_total"], 0), "Pontos da medida móvel no período, após os filtros"],
+                  ["Média ponderada das médias", fmt(res["media_ponderada"], 4),
+                   "Σ(N × média do instrumento) / ΣN; equivale à média de todos os pontos"],
+                  ["Média ponderada dos DPs", fmt(res["dp_ponderado"], 4), "Σ(N × DP do instrumento) / ΣN"]]
+        plat = pd.DataFrame({
+            "Plataforma": eq_tab["Plataforma"], "Instrumentos": eq_tab["Módulos"].map(lambda v: fmt(v, 0)),
+            "N": eq_tab["N"].map(lambda v: fmt(v, 0)), "Média ponderada": eq_tab["Média ponderada"].map(lambda v: fmt(v, 4)),
+            "DP ponderado": eq_tab["DP ponderado"].map(lambda v: fmt(v, 4)),
+            "Início": eq_tab["Início"].map(lambda v: f"{v:%d/%m/%Y %H:%M}" if pd.notna(v) else "—"),
+            "Fim": eq_tab["Fim"].map(lambda v: f"{v:%d/%m/%Y %H:%M}" if pd.notna(v) else "—")})
+        first_col = tab.columns[0]
+        inst = pd.DataFrame({first_col: tab[first_col].astype(str), "Instrumento": tab["Instrument"].astype(str),
+                             "N": tab["N"].map(lambda v: fmt(v, 0)), "Média": tab["Média"].map(lambda v: fmt(v, 4)),
+                             "DP": tab["DP amostral"].map(lambda v: fmt(v, 4))})
+        periodo = (f"{d['date'].min():%d/%m/%Y} a {d['date'].max():%d/%m/%Y}" if d["date"].notna().any() else "—")
+        plats = sorted(d["analyzer"].dropna().unique())
+        rinfo = {
+            "titulo": "Relatório de revisão da medida móvel",
+            "subtitulo": f"{rv_analito} · {join_vals(profiles_)} · {len(plats)} plataforma{'s' if len(plats) != 1 else ''}",
+            "analito": rv_analito,
+            "equip_curto": f"{len(plats)} plataforma{'s' if len(plats) != 1 else ''}",
+            "identificacao": [("Analito", rv_analito), ("Perfil", join_vals(profiles_)),
+                              ("Laboratório / setor", rv_setor or "—"), ("Período avaliado", periodo),
+                              ("Plataformas", ", ".join(plats)), ("Arquivo de origem", upa.name)],
+            "cadastro": cadastro, "resumo": resumo,
+            "nota_resumo": "O DP ponderado é a média aritmética dos DPs dos instrumentos, ponderada por N; não é o DP "
+                           "combinado (pooled). Instrumentos com um único ponto não têm DP e ficam fora dessa ponderação.",
+            "plataformas": plat, "instrumentos": inst,
+            "observacoes": rv_obs, "elaborado": rv_elab,
+            "emitido": pd.Timestamp.now(tz="America/Sao_Paulo").to_pydatetime(),
+        }
+        with st.spinner("Gerando PDF…"):
+            st.session_state["pdf_revisao"] = report.build_review_pdf(rinfo)
+            nome = re.sub(r'[\\/:*?"<>|]+', "-", rv_analito.strip()) or "Analito"
+            cfgs = sorted({m_.group(1) for p_ in profiles_ for m_ in [re.search(r"\((\d+\s*-\s*\d+)\)", p_)] if m_})
+            st.session_state["pdf_revisao_nome"] = (f"Relatório de Revisão de Medida Móvel {nome}"
+                                                    + (f" - {cfgs[0].replace(' ', '')}" if len(cfgs) == 1 else "") + ".pdf")
+    if "pdf_revisao" in st.session_state:
+        st.download_button("Baixar relatório PDF", st.session_state["pdf_revisao"],
+                           file_name=st.session_state["pdf_revisao_nome"], mime="application/pdf", key="dl_pdf_revisao")
+        st.caption("O PDF reflete os filtros do momento em que foi gerado. Mudou algo? Gere de novo.")
 
 
 @st.cache_data(show_spinner=False)
